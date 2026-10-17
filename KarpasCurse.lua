@@ -1,4 +1,4 @@
--- KARPA'S CURSE | V2.3
+-- KARPA'S CURSE | V2.4
 -- Roblox DOORS | Client-side utility UI (speed persistence + survival tools)
 -- No HTTP requests, remote code, or hidden downloads.
 -- NOTE: Server-authoritative mechanics (health, badges, entity damage, room
@@ -12,6 +12,7 @@ local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PathfindingService = game:GetService("PathfindingService")
 
 local player = Players.LocalPlayer
 if not player then return end
@@ -55,6 +56,7 @@ local C = {
 
 local state = {
     walkSpeed = 16,
+    effectiveWalkSpeed = 16,
     speedLock = false,
     godmode = false,
     noclip = false,
@@ -193,7 +195,7 @@ create("TextLabel", {
     Size = UDim2.new(1, -130, 0, 25)
 }, header)
 create("TextLabel", {
-    Text = "V2.3   /   ENTITY LAB  ·  DOORS",
+    Text = "V2.4   /   ENTITY LAB  ·  DOORS",
     Font = Enum.Font.GothamMedium,
     TextSize = 10,
     TextColor3 = C.blue,
@@ -405,7 +407,7 @@ local function button(parent, text, callback)
         connect(item.MouseButton1Click, function()
             local ok, errorText = pcall(callback)
             if not ok then
-                warn("[Karpa's Curse V2.3] " .. tostring(errorText))
+                warn("[Karpa's Curse V2.4] " .. tostring(errorText))
                 notify("Action failed; see client console", true)
             end
         end)
@@ -447,7 +449,7 @@ local function toggle(parent, text, initial, callback)
         animate(knob, {Position = value and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3)})
         local ok, errorText = pcall(callback, value)
         if not ok then
-            warn("[Karpa's Curse V2.3] " .. tostring(errorText))
+            warn("[Karpa's Curse V2.4] " .. tostring(errorText))
             notify("Toggle failed; see client console", true)
         end
     end
@@ -492,7 +494,7 @@ local function slider(parent, text, minimum, maximum, initial, callback)
         fill.Size = UDim2.fromScale(fraction, 1)
         textLabel.Text = text .. "   " .. tostring(value)
         local ok, errorText = pcall(callback, value)
-        if not ok then warn("[Karpa's Curse V2.3] " .. tostring(errorText)) end
+        if not ok then warn("[Karpa's Curse V2.4] " .. tostring(errorText)) end
     end
     set(initial)
     local sliding = false
@@ -556,7 +558,8 @@ label(dashPage, "Teleport to loaded geometry; authentic entity-model visual morp
 section(dashPage, "Server-controlled")
 label(dashPage, "This script cannot grant real Knobs, server inventory, real entity powers or permanent achievements. A morph is visible on your own client only.", 75, C.muted)
 
--- CurrentRooms has numeric room names ("1", "2", ...), not "Door1".
+-- Doors dynamically create rooms. Room n-1 normally owns the door leading
+-- to room n. Local teleport attempts may be corrected by the game server.
 local function loadedRooms()
     return Workspace:FindFirstChild("CurrentRooms")
 end
@@ -571,7 +574,7 @@ local function getDoorObject(room)
         return direct
     end
     for _, obj in ipairs(room:GetDescendants()) do
-        if obj.Name == "Door" and (obj:IsA("BasePart") or obj:IsA("Model")) then
+        if obj.Name == "Door" and (obj:IsA("Model") or obj:IsA("BasePart")) then
             return obj
         end
     end
@@ -584,6 +587,10 @@ local function getDoorCFrame(room)
     local part = door:FindFirstChild("Door") or door.PrimaryPart
     if part and part:IsA("BasePart") then return part.CFrame end
     return door:GetPivot()
+end
+local function getDoorForNumber(number)
+    -- The exit door in room 49 is generally Door 50.
+    return getDoorCFrame(getRoom(number - 1)) or getDoorCFrame(getRoom(number))
 end
 local function newestRoomNumber()
     local rooms = loadedRooms()
@@ -599,51 +606,93 @@ local function rootPart()
     local char = player.Character
     return char and char:FindFirstChild("HumanoidRootPart")
 end
-local function teleportToRoom(number)
-    number = tonumber(number)
-    if not number or number < 0 or number > 1000 or number % 1 ~= 0 then
-        notify("Enter a valid room number", true)
-        return
-    end
-    local doorCf = getDoorCFrame(getRoom(number))
-    if not doorCf then
-        notify("Room " .. number .. " or its door is not currently loaded", true)
-        return
+local function currentProgressRoom()
+    local data = ReplicatedStorage:FindFirstChild("GameData")
+    local latest = data and data:FindFirstChild("LatestRoom")
+    if latest and (latest:IsA("IntValue") or latest:IsA("NumberValue")) then
+        return math.floor(latest.Value)
     end
     local root = rootPart()
-    if not root then notify("Character not ready", true) return end
-    -- Use whichever side of the door is closer to the player; offset to avoid
-    -- placing their root inside the door's collision geometry.
-    local normal = doorCf.LookVector
-    local direction = (root.Position - doorCf.Position):Dot(normal) >= 0 and 1 or -1
-    local destination = doorCf.Position + normal * (direction * 5) + Vector3.new(0, 2.5, 0)
-    local targetCFrame = CFrame.new(destination, destination + doorCf.LookVector)
-    local character = player.Character
-    if character then
-        character:PivotTo(targetCFrame)
-    else
-        root.CFrame = targetCFrame
+    local rooms = loadedRooms()
+    if root and rooms then
+        local nearest, nearestDist
+        for _, room in ipairs(rooms:GetChildren()) do
+            local number = tonumber(room.Name)
+            if number and room:IsA("Model") then
+                local distance = (root.Position - room:GetPivot().Position).Magnitude
+                if not nearestDist or distance < nearestDist then
+                    nearest, nearestDist = number, distance
+                end
+            end
+        end
+        if nearest then return nearest end
     end
-    notify("Attempted loaded-room teleport: " .. number)
+    return newestRoomNumber()
+end
+local queuedDoorNumber
+local teleportIgnoreUntil = 0
+local function teleportToRoom(number)
+    number = tonumber(number)
+    if not number or number < 1 or number > 1000 or number % 1 ~= 0 then
+        notify("Enter a valid door number (1-1000)", true)
+        return false
+    end
+    local doorCf = getDoorForNumber(number)
+    if not doorCf then return false end
+    local root = rootPart()
+    local character = player.Character
+    if not root or not character then
+        notify("Character not ready", true)
+        return false
+    end
+    local direction = (root.Position - doorCf.Position):Dot(doorCf.LookVector) >= 0 and 1 or -1
+    local destination = doorCf.Position + doorCf.LookVector * (direction * 4.5) + Vector3.new(0, 2.5, 0)
+    teleportIgnoreUntil = os.clock() + 3
+    character:PivotTo(CFrame.new(destination, destination + doorCf.LookVector))
+    notify("Door " .. number .. ": local teleport attempted")
+    task.delay(1.4, function()
+        if not alive or not root.Parent then return end
+        if (root.Position - destination).Magnitude > 22 then
+            queuedDoorNumber = number
+            notify("DOORS corrected the teleport; switching to walking route", true)
+        end
+    end)
+    return true
+end
+local function requestDoor(number)
+    number = tonumber(number)
+    if not number or number < 1 or number > 1000 or number % 1 ~= 0 then
+        notify("Enter a valid door number (1-1000)", true)
+        return
+    end
+    if getDoorForNumber(number) then
+        queuedDoorNumber = nil
+        teleportToRoom(number)
+    else
+        queuedDoorNumber = number
+        notify("Door " .. number .. " not generated yet; route queued")
+    end
 end
 
-section(navPage, "Loaded room navigation")
-local roomDisplay = label(navPage, "Newest loaded room: scanning...", 28, C.text, Enum.Font.GothamSemibold)
+section(navPage, "Door navigation")
+local roomDisplay = label(navPage, "Current room: scanning...", 28, C.text, Enum.Font.GothamSemibold)
+local routeStatus = label(navPage, "Route: none", 35, C.muted)
+label(navPage, "Instant teleport is attempted only for loaded doors. Other destinations start a walking route through rooms as they generate.", 82, C.muted)
 button(navPage, "Teleport to newest loaded door", function()
     local number = newestRoomNumber()
-    if number then teleportToRoom(number) else notify("No loaded rooms found", true) end
+    if number then requestDoor(number + 1) else notify("No loaded rooms found", true) end
 end)
 button(navPage, "Teleport to previous loaded door", function()
-    local number = newestRoomNumber()
-    if number and getRoom(number - 1) then
-        teleportToRoom(number - 1)
+    local number = currentProgressRoom()
+    if number and getDoorForNumber(number) then
+        teleportToRoom(number)
     else
-        notify("Previous room is not loaded", true)
+        notify("Previous door is not accessible right now", true)
     end
 end)
 local roomInput = create("TextBox", {
     Text = "",
-    PlaceholderText = "Enter loaded room number, e.g. 50",
+    PlaceholderText = "Door number (e.g. 50 or 100)",
     ClearTextOnFocus = false,
     Font = Enum.Font.Gotham,
     TextSize = 12,
@@ -654,15 +703,19 @@ local roomInput = create("TextBox", {
     Size = UDim2.new(1, 0, 0, 37)
 }, navPage)
 rounded(roomInput, 6)
-button(navPage, "Teleport to entered room", function()
-    teleportToRoom(tonumber(roomInput.Text))
+button(navPage, "GO TO DOOR / queue route", function()
+    requestDoor(tonumber(roomInput.Text))
 end)
 section(navPage, "Quick destinations")
-for _, roomNumber in ipairs({1, 50, 100}) do
-    button(navPage, "Door " .. roomNumber .. "  /  if loaded", function()
-        teleportToRoom(roomNumber)
+for _, doorNumber in ipairs({1, 50, 100}) do
+    button(navPage, "Door " .. doorNumber .. "  /  Go or queue", function()
+        requestDoor(doorNumber)
     end)
 end
+button(navPage, "Cancel active door route", function()
+    queuedDoorNumber = nil
+    notify("Route cancelled")
+end)
 local savedSpot
 button(navPage, "Set personal waypoint here", function()
     local root = rootPart()
@@ -674,10 +727,11 @@ button(navPage, "Return to personal waypoint", function()
     if not savedSpot then notify("No waypoint saved", true) return end
     local char = player.Character
     if not char then notify("Character not ready", true) return end
+    teleportIgnoreUntil = os.clock() + 3
     char:PivotTo(savedSpot)
-    notify("Waypoint teleport attempted")
+    notify("Waypoint teleport attempted (server may correct)")
 end)
-label(navPage, "Teleport works only to rooms already loaded locally. The server may correct your position, and a location may be unsafe.", 65)
+label(navPage, "Rooms 50/100 do NOT exist at the start of a normal DOORS run. Route assistance follows regular progression; keys, puzzles and hazards can stop it.", 90, C.muted)
 
 -- Known DOORS entity names; this is deliberately a best-effort detector,
 -- not a promise that every game update or entity will be recognized.
@@ -838,15 +892,21 @@ local function humanoid()
     local character = player.Character
     return character and character:FindFirstChildOfClass("Humanoid")
 end
--- Treat speed as a continuous override instead of a one-off slider write.
--- Humanoid values may still be corrected by DOORS' server; this is best effort.
+-- Safe-ish adaptive speed: DOORS may correct even small increases.
+-- Never keep raising movement speed against a server correction.
+local MAX_SPEED_ATTEMPT = 24
+local speedSnapCount = 0
+local function resetEffectiveSpeed()
+    speedSnapCount = 0
+    state.effectiveWalkSpeed = math.min(state.walkSpeed, MAX_SPEED_ATTEMPT)
+end
 local function applySpeed(hum)
     if not hum or not hum.Parent or hum.Health <= 0 then return end
     if walkSpeedBackup[hum] == nil then
         walkSpeedBackup[hum] = hum.WalkSpeed
     end
-    if hum.WalkSpeed ~= state.walkSpeed then
-        hum.WalkSpeed = state.walkSpeed
+    if hum.WalkSpeed ~= state.effectiveWalkSpeed then
+        hum.WalkSpeed = state.effectiveWalkSpeed
     end
 end
 local function restoreSpeeds()
@@ -909,6 +969,7 @@ local initializedSpeedSlider = false
 local speedLockToggle
 local speedSlider = slider(playerPage, "WalkSpeed", 8, 100, 16, function(value)
     state.walkSpeed = value
+    resetEffectiveSpeed()
     if not initializedSpeedSlider then return end
     if speedLockToggle then
         -- Automatically turn persistence on when the user moves the slider.
@@ -920,8 +981,9 @@ initializedSpeedSlider = true
 speedLockToggle = toggle(playerPage, "Keep selected speed active", false, function(enabled)
     state.speedLock = enabled
     if enabled then
+        resetEffectiveSpeed()
         applySpeed(humanoid())
-        notify("Speed lock on: " .. tostring(state.walkSpeed))
+        notify("Speed requested: " .. tostring(state.walkSpeed) .. " / active: " .. tostring(state.effectiveWalkSpeed))
     else
         restoreSpeeds()
         notify("Speed lock off; previous speed restored")
@@ -935,7 +997,8 @@ local gravityToggle = toggle(playerPage, "Low gravity (local)", false, function(
     state.lowGravity = value
     Workspace.Gravity = value and 65 or originalGravity
 end)
-label(playerPage, "Speed lock reapplies WalkSpeed every frame, even after releasing the slider. Server corrections and movement checks may still override it.", 83)
+local speedStatus = label(playerPage, "Active speed: 16 / Requested: 16", 29, C.text)
+label(playerPage, "Adaptive: attempts at most 24 speed; snap-back detection reduces it to 16 if needed. No client script can guarantee faster speed against server movement limits.", 99, C.muted)
 
 section(playerPage, "Survival")
 local godmodeToggle = toggle(playerPage, "Godmode (local attempt)", false, function(enabled)
@@ -1518,7 +1581,7 @@ label(toolsPage, "This does not automatically grant achievements or bypass proxi
 section(toolsPage, "DOORS achievements")
 label(toolsPage, "Use the Achievements tab for goal guidance and in-range interaction automation. Only the DOORS server decides whether an achievement is unlocked.", 76)
 -- =========================================
--- DOORS ACHIEVEMENT ASSISTANT (V2.3)
+-- DOORS ACHIEVEMENT ASSISTANT (V2.4)
 -- No server remotes, BadgeService award calls, or fake completed badges.
 -- The auto actions can only attempt nearby, currently visible prompts.
 -- Actual achievements and progress are controlled by DOORS.
@@ -1723,9 +1786,10 @@ end)
 section(toolsPage, "Lifecycle")
 local resetButton = button(toolsPage, "Reset all toggles and movement")
 local unloadButton = button(toolsPage, "Unload Karpa's Curse")
-label(toolsPage, "No remote code, web requests, external assets, or credential access.  •  V2.3", 61)
+label(toolsPage, "No remote code, web requests, external assets, or credential access.  •  V2.4", 61)
 
 local function resetAll()
+    queuedDoorNumber = nil
     stopMorph(false)
     morphGlowToggle.set(false)
     morphScaleSlider.set(100)
@@ -1761,6 +1825,7 @@ connect(resetButton.MouseButton1Click, function() resetAll() end)
 
 local function cleanup()
     if not alive then return end
+    queuedDoorNumber = nil
     stopMorph(false)
     morphGlowToggle.set(false)
     cleanTools()
@@ -1890,14 +1955,125 @@ connect(RunService.RenderStepped, function()
     if state.godmode then applySurvivalGuard(hum) end
 end)
 
+-- Detect sudden movement opposite to the held walking direction. This is
+-- a best-effort sign of server snap-back, not an anti-cheat bypass.
+local speedLastPosition
+local speedLastDirection
+local speedLastSample = 0
+connect(RunService.Heartbeat, function()
+    if not alive then return end
+    local now = os.clock()
+    if now - speedLastSample < 0.12 then return end
+    speedLastSample = now
+    local root = rootPart()
+    local hum = humanoid()
+    if root and hum then
+        local position = root.Position
+        local move = hum.MoveDirection
+        local flatDirection = Vector3.new(move.X, 0, move.Z)
+        if state.speedLock and now > teleportIgnoreUntil and speedLastPosition and speedLastDirection then
+            local displacement = position - speedLastPosition
+            local flatDisplacement = Vector3.new(displacement.X, 0, displacement.Z)
+            if flatDirection.Magnitude > 0.65 and speedLastDirection:Dot(flatDirection) > 0.7
+                and flatDisplacement.Magnitude > 6 and flatDisplacement:Dot(flatDirection.Unit) < -5 then
+                speedSnapCount = speedSnapCount + 1
+                local baseline = math.min(16, state.walkSpeed)
+                state.effectiveWalkSpeed = math.max(baseline, state.effectiveWalkSpeed - (speedSnapCount >= 2 and 8 or 4))
+                applySpeed(hum)
+                notify("Snap-back detected; active speed reduced to " .. tostring(state.effectiveWalkSpeed), true)
+            end
+        end
+        speedLastPosition, speedLastDirection = position, flatDirection
+    else
+        speedLastPosition, speedLastDirection = nil, nil
+    end
+end)
+
+-- When the requested door has not generated, follow real doors in sequence.
+-- This does NOT create rooms, bypass locked puzzles or guarantee progression.
+local lastRouteMoveAt = 0
+local function advanceDoorRoute()
+    if not queuedDoorNumber then return end
+    local root = rootPart()
+    local hum = humanoid()
+    if not root or not hum or hum.Health <= 0 then return end
+    local progress = currentProgressRoom()
+    if not progress then return end
+    local desired = queuedDoorNumber
+    local destinationDoor = getDoorForNumber(desired)
+    local targetCf
+    if destinationDoor and (root.Position - destinationDoor.Position).Magnitude < 10 then
+        queuedDoorNumber = nil
+        notify("Reached Door " .. desired .. " area")
+        return
+    end
+    if destinationDoor and (root.Position - destinationDoor.Position).Magnitude < 90 then
+        targetCf = destinationDoor
+    else
+        targetCf = getDoorCFrame(getRoom(progress))
+            or getDoorForNumber(progress + 1)
+    end
+    if not targetCf then
+        routeStatus.Text = "Route: Door " .. desired .. " / next door unavailable or puzzle"
+        return
+    end
+    local distance = (root.Position - targetCf.Position).Magnitude
+    if distance < 11 then
+        -- Interact only with a normally visible and reachable door prompt.
+        local room = getRoom(progress)
+        local door = getDoorObject(room)
+        if door then
+            for _, obj in ipairs(door:GetDescendants()) do
+                if obj:IsA("ProximityPrompt") and promptCategory(obj) == "door" then
+                    tryPrompt(obj, "door")
+                end
+            end
+        end
+        return
+    end
+    local now = os.clock()
+    if now - lastRouteMoveAt < 1.5 then return end
+    lastRouteMoveAt = now
+    local goalPosition = targetCf.Position
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = false,
+        WaypointSpacing = 5
+    })
+    local ok = pcall(function() path:ComputeAsync(root.Position, goalPosition) end)
+    if ok and path.Status == Enum.PathStatus.Success then
+        local waypoints = path:GetWaypoints()
+        local point = waypoints[math.min(3, #waypoints)]
+        if point then
+            hum:MoveTo(point.Position)
+            return
+        end
+    end
+    hum:MoveTo(goalPosition)
+end
+task.spawn(function()
+    while alive do
+        if queuedDoorNumber then
+            local ok, err = pcall(advanceDoorRoute)
+            if not ok then warn("[Karpa's Curse] Route: " .. tostring(err)) end
+        end
+        task.wait(0.85)
+    end
+end)
+
 -- Low-frequency refresh: handles new/removed rooms and entities while avoiding
 -- thousands of GUI connections or an ESP scan on every render frame.
 task.spawn(function()
     while alive do
         if state.fullbright then setFullbright(true) end
+        if speedStatus and speedStatus.Parent then
+            speedStatus.Text = "Active speed: " .. tostring(state.speedLock and state.effectiveWalkSpeed or "default") .. " / Requested: " .. tostring(state.walkSpeed)
+        end
         local latest = newestRoomNumber()
         if roomDisplay and roomDisplay.Parent then
-            roomDisplay.Text = "Newest loaded room: " .. (latest and tostring(latest) or "none")
+            roomDisplay.Text = "Current: " .. tostring(currentProgressRoom() or "?") .. "  /  newest generated: " .. tostring(latest or "?")
+            routeStatus.Text = queuedDoorNumber and ("Auto-route to Door " .. queuedDoorNumber .. " (regular progression)") or "Route: none"
         end
         if state.doorESP then
             local candidates = {}
@@ -1929,4 +2105,4 @@ for id, page in pairs(pages) do
     tabButtons[id].BackgroundColor3 = active and C.blueDark or C.surface
     tabButtons[id].TextColor3 = active and C.text or C.muted
 end
-notify("V2.3 / Entity Lab ready  ·  scan models in MORPHS")
+notify("V2.4 / Entity Lab ready  ·  scan models in MORPHS")
