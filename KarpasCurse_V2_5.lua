@@ -1497,11 +1497,87 @@ end)
 -- No server-side currency mutation or external remote events.
 -- ═══════════════════════════════════════════════════════════════
 local givenTools = {}
+local hotbarEnabled = true
+local hotbarFrame = create("Frame", {
+    Name = "KarpaItemHotbar",
+    AnchorPoint = Vector2.new(0.5, 1),
+    Position = UDim2.new(0.5, 0, 1, -72),
+    Size = UDim2.fromOffset(536, 59),
+    BackgroundColor3 = C.panel,
+    BackgroundTransparency = 0.12,
+    BorderSizePixel = 0
+}, gui)
+rounded(hotbarFrame, 9)
+stroked(hotbarFrame, C.blue, 1, 0.46)
+create("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+    VerticalAlignment = Enum.VerticalAlignment.Center,
+    Padding = UDim.new(0, 5),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, hotbarFrame)
+local function equipLocalSlot(index)
+    local tool = givenTools[index]
+    if not tool or not tool.Parent then return end
+    local hum = humanoid()
+    if not hum then return end
+    if tool.Parent == player.Character then
+        hum:UnequipTools()
+    else
+        pcall(function() hum:EquipTool(tool) end)
+    end
+end
+local function refreshLocalHotbar()
+    if not hotbarFrame or not hotbarFrame.Parent then return end
+    for _, child in ipairs(hotbarFrame:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+    hotbarFrame.Visible = hotbarEnabled and #givenTools > 0
+    for i = 1, math.min(#givenTools, 8) do
+        local tool = givenTools[i]
+        if tool and tool.Parent then
+            local shortName = tool.Name:gsub("%s*%[LOCAL%]","")
+            if #shortName > 12 then shortName = shortName:sub(1, 11) .. "…" end
+            local slot = create("TextButton", {
+                Name = "Slot" .. i,
+                LayoutOrder = i,
+                Size = UDim2.fromOffset(60, 46),
+                Text = tostring(i) .. "\n" .. shortName,
+                TextWrapped = true,
+                Font = Enum.Font.GothamSemibold,
+                TextSize = 10,
+                TextColor3 = C.text,
+                AutoButtonColor = true,
+                BackgroundColor3 = tool.Parent == player.Character and C.blueDark or C.surface,
+                BorderSizePixel = 0
+            }, hotbarFrame)
+            rounded(slot, 6)
+            connect(slot.MouseButton1Click, function() equipLocalSlot(i) end)
+        end
+    end
+end
+connect(UserInputService.InputBegan, function(input, consumed)
+    if consumed or UserInputService:GetFocusedTextBox() then return end
+    local slotCodes = {
+        [Enum.KeyCode.One]=1, [Enum.KeyCode.Two]=2, [Enum.KeyCode.Three]=3,
+        [Enum.KeyCode.Four]=4, [Enum.KeyCode.Five]=5, [Enum.KeyCode.Six]=6,
+        [Enum.KeyCode.Seven]=7, [Enum.KeyCode.Eight]=8
+    }
+    local slot = slotCodes[input.KeyCode]
+    if slot and hotbarEnabled then equipLocalSlot(slot) end
+end)
+section(itemPage, "LOCAL inventory hotbar")
+label(itemPage, "Items created here appear in Karpa's own bottom-screen hotbar. Tap their slot or press 1-8 to equip. This does NOT inject server-issued DOORS inventory.", 94, C.muted)
+toggle(itemPage, "Show Karpa hotbar", true, function(v)
+    hotbarEnabled = v
+    refreshLocalHotbar()
+end)
 local function cleanTools()
     for _, tool in ipairs(givenTools) do
         if tool and tool.Parent then tool:Destroy() end
     end
     table.clear(givenTools)
+    refreshLocalHotbar()
 end
 local function createLocalToy(display, color, lightType)
     local backpack = player:FindFirstChildOfClass("Backpack")
@@ -1540,7 +1616,8 @@ local function createLocalToy(display, color, lightType)
     end)
     tool.Parent = backpack
     table.insert(givenTools, tool)
-    notify(display .. " toy added to local Backpack")
+    refreshLocalHotbar()
+    notify(display .. " added to Karpa hotbar (client-only)")
 end
 local function findOriginalTool(name)
     local wanted = normalizedName(name)
@@ -1564,7 +1641,9 @@ local function grantLocalItem(name)
         local source = findOriginalTool(name)
         if not alive then fetchingItem = false return end
         if not source then
-            notify("No accessible DOORS Tool template: " .. name, true)
+            notify("Original template unavailable; creating a local " .. name .. " prop")
+            local color = normalizedName(name) == "crucifix" and Color3.fromRGB(220, 180, 75) or C.blue
+            createLocalToy(name, color, "PointLight")
             fetchingItem = false
             return
         end
@@ -1581,7 +1660,8 @@ local function grantLocalItem(name)
             copy:SetAttribute("KarpaLocalCopy", true)
             copy.Parent = backpack
             table.insert(givenTools, copy)
-            notify("Client-only " .. name .. " template added; server may ignore it")
+            refreshLocalHotbar()
+            notify("Local " .. name .. " copied into Karpa hotbar; server might ignore it")
         end
         fetchingItem = false
     end)
