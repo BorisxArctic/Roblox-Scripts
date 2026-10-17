@@ -714,6 +714,9 @@ for _, doorNumber in ipairs({1, 50, 100}) do
 end
 button(navPage, "Cancel active door route", function()
     queuedDoorNumber = nil
+    local root = rootPart()
+    local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if root and hum then hum:MoveTo(root.Position) end
     notify("Route cancelled")
 end)
 local savedSpot
@@ -1975,7 +1978,7 @@ connect(RunService.Heartbeat, function()
             local displacement = position - speedLastPosition
             local flatDisplacement = Vector3.new(displacement.X, 0, displacement.Z)
             if flatDirection.Magnitude > 0.65 and speedLastDirection:Dot(flatDirection) > 0.7
-                and flatDisplacement.Magnitude > 6 and flatDisplacement:Dot(flatDirection.Unit) < -5 then
+                and flatDisplacement.Magnitude > 3.5 and flatDisplacement:Dot(flatDirection.Unit) < -2.5 then
                 speedSnapCount = speedSnapCount + 1
                 local baseline = math.min(16, state.walkSpeed)
                 state.effectiveWalkSpeed = math.max(baseline, state.effectiveWalkSpeed - (speedSnapCount >= 2 and 8 or 4))
@@ -2044,7 +2047,7 @@ local function advanceDoorRoute()
     local ok = pcall(function() path:ComputeAsync(root.Position, goalPosition) end)
     if ok and path.Status == Enum.PathStatus.Success then
         local waypoints = path:GetWaypoints()
-        local point = waypoints[math.min(3, #waypoints)]
+        local point = waypoints[math.min(2, #waypoints)]
         if point then
             hum:MoveTo(point.Position)
             return
