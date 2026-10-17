@@ -1,4 +1,6 @@
--- KARPA'S CURSE | V2.5
+-- KARPA'S CURSE | V2.5.1
+-- Karpa's Curse startup guard: shows a diagnostic on-screen if UI initialization errors.
+local bootOK, bootError = xpcall(function()
 -- Roblox DOORS | Client-side utility UI (speed persistence + survival tools)
 -- No HTTP requests, remote code, or hidden downloads.
 -- NOTE: Server-authoritative mechanics (health, badges, entity damage, room
@@ -197,7 +199,7 @@ create("TextLabel", {
     Size = UDim2.new(1, -130, 0, 25)
 }, header)
 create("TextLabel", {
-    Text = "V2.5   /   ENTITY LAB  ·  DOORS",
+    Text = "V2.5.1   /   ENTITY LAB  ·  DOORS",
     Font = Enum.Font.GothamMedium,
     TextSize = 10,
     TextColor3 = C.blue,
@@ -409,7 +411,7 @@ local function button(parent, text, callback)
         connect(item.MouseButton1Click, function()
             local ok, errorText = pcall(callback)
             if not ok then
-                warn("[Karpa's Curse V2.5] " .. tostring(errorText))
+                warn("[Karpa's Curse V2.5.1] " .. tostring(errorText))
                 notify("Action failed; see client console", true)
             end
         end)
@@ -451,7 +453,7 @@ local function toggle(parent, text, initial, callback)
         animate(knob, {Position = value and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3)})
         local ok, errorText = pcall(callback, value)
         if not ok then
-            warn("[Karpa's Curse V2.5] " .. tostring(errorText))
+            warn("[Karpa's Curse V2.5.1] " .. tostring(errorText))
             notify("Toggle failed; see client console", true)
         end
     end
@@ -496,7 +498,7 @@ local function slider(parent, text, minimum, maximum, initial, callback)
         fill.Size = UDim2.fromScale(fraction, 1)
         textLabel.Text = text .. "   " .. tostring(value)
         local ok, errorText = pcall(callback, value)
-        if not ok then warn("[Karpa's Curse V2.5] " .. tostring(errorText)) end
+        if not ok then warn("[Karpa's Curse V2.5.1] " .. tostring(errorText)) end
     end
     set(initial)
     local sliding = false
@@ -1119,7 +1121,9 @@ connect(RunService.RenderStepped, thirdPersonFrame)
 -- instances* are copied. We never synthesize a fake Rush/Figure model or
 -- claim this changes the player's entity identity server-side.
 -- ═══════════════════════════════════════════════════════════════
-local morphCatalog = {
+-- Shared state namespace prevents Luau's 200-local limit.
+local KarpasModule = {}
+KarpasModule.morphCatalog = {
     {"Rush", "Hotel", {"Rush", "RushMoving", "RushNew", "RushEntity"}},
     {"Ambush", "Hotel", {"Ambush", "AmbushMoving", "AmbushEntity"}},
     {"Figure", "Hotel", {"Figure", "FigureRig", "FigureModel", "FigureRagdoll"}},
@@ -1166,36 +1170,36 @@ local morphCatalog = {
     {"Greed", "Other", {"Greed", "GreedEntity"}},
     {"Jeff the Killer", "Other", {"JeffTheKiller"}}
 }
-local function normalizedName(name)
+function KarpasModule.normalizedName(name)
     return tostring(name or ""):lower():gsub("[^%w]", "")
 end
-local aliases = {}
-for _, item in ipairs(morphCatalog) do
+KarpasModule.aliases = {}
+for _, item in ipairs(KarpasModule.morphCatalog) do
     for _, alias in ipairs(item[3]) do
-        local key = normalizedName(alias)
-        aliases[key] = aliases[key] or {}
-        table.insert(aliases[key], item[1])
+        local key = KarpasModule.normalizedName(alias)
+        KarpasModule.aliases[key] = KarpasModule.aliases[key] or {}
+        table.insert(KarpasModule.aliases[key], item[1])
     end
 end
-local catalogByName = {}
-for _, item in ipairs(morphCatalog) do catalogByName[item[1]] = item end
-local sourceMap = {}
-local cachedSources = {}
-local morphVisual
-local morphCurrent
-local morphScale = 1
-local morphFollowOffset = 0
-local morphHidden = setmetatable({}, {__mode = "k"})
-local morphAura = false
-local morphGlow
-local morphRows = {}
-local scanningAssets = false
-local cacheObservedEntity
-local morphSelectedLabel
-local morphScanLabel
+KarpasModule.catalogByName = {}
+for _, item in ipairs(KarpasModule.morphCatalog) do KarpasModule.catalogByName[item[1]] = item end
+KarpasModule.sourceMap = {}
+KarpasModule.cachedSources = {}
+KarpasModule.morphVisual = nil
+KarpasModule.morphCurrent = nil
+KarpasModule.morphScale = 1
+KarpasModule.morphFollowOffset = 0
+KarpasModule.morphHidden = setmetatable({}, {__mode = "k"})
+KarpasModule.morphAura = false
+KarpasModule.morphGlow = nil
+KarpasModule.morphRows = {}
+KarpasModule.scanningAssets = false
+KarpasModule.cacheObservedEntity = nil
+KarpasModule.morphSelectedLabel = nil
+KarpasModule.morphScanLabel = nil
 
 -- Check whether a source is an actual visible model or part with geometry.
-local function visualParts(source)
+function KarpasModule.visualParts(source)
     if source:IsA("BasePart") then return 1 end
     if not source:IsA("Model") then return 0 end
     local count = 0
@@ -1207,20 +1211,20 @@ local function visualParts(source)
     end
     return count
 end
-local function candidateScore(obj, root)
-    local score = visualParts(obj)
+function KarpasModule.candidateScore(obj, root)
+    local score = KarpasModule.visualParts(obj)
     if score == 0 then return -1 end
     score = math.min(score, 40)
     if root == ReplicatedStorage then score = score + 60 end
     if obj:IsA("Model") then score = score + 10 end
     local par = obj.Parent
-    if par and normalizedName(par.Name):match("rig") then score = score + 5 end
+    if par and KarpasModule.normalizedName(par.Name):match("rig") then score = score + 5 end
     return score
 end
-local function scanEntitySources()
-    if scanningAssets then return end
-    scanningAssets = true
-    morphScanLabel.Text = "Scanning accessible assets..."
+function KarpasModule.scanEntitySources()
+    if KarpasModule.scanningAssets then return end
+    KarpasModule.scanningAssets = true
+    KarpasModule.morphScanLabel.Text = "Scanning accessible assets..."
     local found = {}
     local count = 0
     for _, root in ipairs({ReplicatedStorage, Workspace, Lighting}) do
@@ -1230,10 +1234,10 @@ local function scanEntitySources()
             if count % 900 == 0 then task.wait() end
             if (obj:IsA("BasePart") or obj:IsA("Model"))
                 and not (player.Character and obj:IsDescendantOf(player.Character))
-                and not (morphVisual and obj:IsDescendantOf(morphVisual)) then
-                local targets = aliases[normalizedName(obj.Name)]
+                and not (KarpasModule.morphVisual and obj:IsDescendantOf(KarpasModule.morphVisual)) then
+                local targets = KarpasModule.aliases[KarpasModule.normalizedName(obj.Name)]
                 if targets then
-                    local score = candidateScore(obj, root)
+                    local score = KarpasModule.candidateScore(obj, root)
                     for _, name in ipairs(targets) do
                         local current = found[name]
                         if score > 0 and (not current or score > current.score) then
@@ -1247,7 +1251,7 @@ local function scanEntitySources()
     end
     -- Keep previously encountered ORIGINAL models available after they
     -- despawn locally. Never confuse a cached original with a fake mesh.
-    for name, originalCopy in pairs(cachedSources) do
+    for name, originalCopy in pairs(KarpasModule.cachedSources) do
         if originalCopy then
             local hit = found[name]
             if not hit or not hit.source.Parent then
@@ -1255,74 +1259,74 @@ local function scanEntitySources()
             end
         end
     end
-    sourceMap = found
-    if cacheObservedEntity then
+    KarpasModule.sourceMap = found
+    if KarpasModule.cacheObservedEntity then
         for _, hit in pairs(found) do
             if not hit.cached and hit.source:IsDescendantOf(Workspace) then
-                cacheObservedEntity(hit.source)
+                KarpasModule.cacheObservedEntity(hit.source)
             end
         end
     end
     local available = 0
-    for _, spec in ipairs(morphCatalog) do
+    for _, spec in ipairs(KarpasModule.morphCatalog) do
         local name = spec[1]
         local match = found[name]
         local exists = match and (match.cached or match.source.Parent ~= nil)
         if exists then available = available + 1 end
-        if morphRows[name] then
-            morphRows[name].Text = (exists and "●  " or "○  ") .. name .. "  /  " .. spec[2] .. ((exists and match.cached) and "  ·  SAVED" or "")
-            morphRows[name].TextColor3 = exists and C.green or C.text
+        if KarpasModule.morphRows[name] then
+            KarpasModule.morphRows[name].Text = (exists and "●  " or "○  ") .. name .. "  /  " .. spec[2] .. ((exists and match.cached) and "  ·  SAVED" or "")
+            KarpasModule.morphRows[name].TextColor3 = exists and C.green or C.text
         end
     end
-    morphScanLabel.Text = tostring(available) .. " of " .. tostring(#morphCatalog) .. " entity assets available in this session"
-    dashAssets.Text = "Real-model assets available: " .. available .. "/" .. #morphCatalog
-    scanningAssets = false
+    KarpasModule.morphScanLabel.Text = tostring(available) .. " of " .. tostring(#KarpasModule.morphCatalog) .. " entity assets available in this session"
+    dashAssets.Text = "Real-model assets available: " .. available .. "/" .. #KarpasModule.morphCatalog
+    KarpasModule.scanningAssets = false
     notify("Entity asset scan: " .. available .. " model(s) available")
 end
-local function stopMorph(showNotice)
-    if morphGlow then morphGlow:Destroy(); morphGlow = nil end
-    if morphVisual then morphVisual:Destroy(); morphVisual = nil end
-    for part, old in pairs(morphHidden) do
+function KarpasModule.stopMorph(showNotice)
+    if KarpasModule.morphGlow then KarpasModule.morphGlow:Destroy(); KarpasModule.morphGlow = nil end
+    if KarpasModule.morphVisual then KarpasModule.morphVisual:Destroy(); KarpasModule.morphVisual = nil end
+    for part, old in pairs(KarpasModule.morphHidden) do
         if part.Parent then part.LocalTransparencyModifier = old end
-        morphHidden[part] = nil
+        KarpasModule.morphHidden[part] = nil
     end
-    morphCurrent = nil
+    KarpasModule.morphCurrent = nil
     dashMorph.Text = "Morph: human"
-    if morphSelectedLabel then morphSelectedLabel.Text = "ACTIVE: HUMAN" end
+    if KarpasModule.morphSelectedLabel then KarpasModule.morphSelectedLabel.Text = "ACTIVE: HUMAN" end
     if showNotice then notify("Entity morph removed") end
 end
-local function hideRealAvatar()
-    if not morphVisual then return end
+function KarpasModule.hideRealAvatar()
+    if not KarpasModule.morphVisual then return end
     local char = player.Character
     if not char then return end
     for _, child in ipairs(char:GetDescendants()) do
         if child:IsA("BasePart") then
-            if morphHidden[child] == nil then morphHidden[child] = child.LocalTransparencyModifier end
+            if KarpasModule.morphHidden[child] == nil then KarpasModule.morphHidden[child] = child.LocalTransparencyModifier end
             child.LocalTransparencyModifier = 1
         end
     end
 end
 -- Retain real models seen during a run, even if DOORS removes the live
 -- instance afterward. Cached clones have no parent and cannot execute scripts.
-cacheObservedEntity = function(obj)
+KarpasModule.cacheObservedEntity = function(obj)
     if not alive or not obj or not obj.Parent then return end
     if not (obj:IsA("Model") or obj:IsA("BasePart")) then return end
     if player.Character and obj:IsDescendantOf(player.Character) then return end
-    if morphVisual and obj:IsDescendantOf(morphVisual) then return end
-    local targets = aliases[normalizedName(obj.Name)]
+    if KarpasModule.morphVisual and obj:IsDescendantOf(KarpasModule.morphVisual) then return end
+    local targets = KarpasModule.aliases[KarpasModule.normalizedName(obj.Name)]
     if not targets then return end
-    if visualParts(obj) < 1 then return end
+    if KarpasModule.visualParts(obj) < 1 then return end
     for _, name in ipairs(targets) do
-        if not cachedSources[name] then
+        if not KarpasModule.cachedSources[name] then
             local ok, saved = pcall(function() return obj:Clone() end)
             if ok and saved then
                 saved.Parent = nil
-                cachedSources[name] = saved
-                if not sourceMap[name] or not sourceMap[name].source.Parent then
-                    sourceMap[name] = {source = saved, cached = true, score = 2}
-                    if morphRows[name] then
-                        morphRows[name].Text = "●  " .. name .. "  /  " .. catalogByName[name][2] .. "  ·  SAVED"
-                        morphRows[name].TextColor3 = C.green
+                KarpasModule.cachedSources[name] = saved
+                if not KarpasModule.sourceMap[name] or not KarpasModule.sourceMap[name].source.Parent then
+                    KarpasModule.sourceMap[name] = {source = saved, cached = true, score = 2}
+                    if KarpasModule.morphRows[name] then
+                        KarpasModule.morphRows[name].Text = "●  " .. name .. "  /  " .. KarpasModule.catalogByName[name][2] .. "  ·  SAVED"
+                        KarpasModule.morphRows[name].TextColor3 = C.green
                     end
                 end
             end
@@ -1330,33 +1334,33 @@ cacheObservedEntity = function(obj)
     end
 end
 connect(Workspace.DescendantAdded, function(obj)
-    if aliases[normalizedName(obj.Name)] then
-        task.delay(0.25, function() cacheObservedEntity(obj) end)
+    if KarpasModule.aliases[KarpasModule.normalizedName(obj.Name)] then
+        task.delay(0.25, function() KarpasModule.cacheObservedEntity(obj) end)
     end
 end)
 
-local function refreshMorphGlow()
-    if morphGlow then morphGlow:Destroy(); morphGlow = nil end
-    if not (morphAura and morphVisual) then return end
+function KarpasModule.refreshMorphGlow()
+    if KarpasModule.morphGlow then KarpasModule.morphGlow:Destroy(); KarpasModule.morphGlow = nil end
+    if not (KarpasModule.morphAura and KarpasModule.morphVisual) then return end
     local glow = Instance.new("Highlight")
     glow.Name = "KarpaMorphCursedOutline"
-    glow.Adornee = morphVisual
+    glow.Adornee = KarpasModule.morphVisual
     glow.FillColor = Color3.fromRGB(130, 14, 36)
     glow.OutlineColor = Color3.fromRGB(255, 53, 83)
     glow.FillTransparency = 0.92
     glow.OutlineTransparency = 0.15
     glow.DepthMode = Enum.HighlightDepthMode.Occluded
-    glow.Parent = morphVisual
-    morphGlow = glow
+    glow.Parent = KarpasModule.morphVisual
+    KarpasModule.morphGlow = glow
 end
 
 
 -- Rendered fallback for entities whose original model is not replicated.
 -- Clearly labelled as an interpretation, never as an original DOORS mesh.
-local allowThemedFallback = true
-local function buildThemedMorph(name)
+KarpasModule.allowThemedFallback = true
+function KarpasModule.buildThemedMorph(name)
     local rig = Instance.new("Model")
-    rig.Name = "KarpaThemed_" .. normalizedName(name)
+    rig.Name = "KarpaThemed_" .. KarpasModule.normalizedName(name)
     local humanoidShape = name == "Figure" or name == "Seek"
         or name == "Grumble" or name == "Queen Grumble"
     local color = name == "Seek" and Color3.fromRGB(10, 10, 14)
@@ -1398,8 +1402,8 @@ local function buildThemedMorph(name)
     end
     return rig
 end
-local function morphInto(name)
-    local entry = sourceMap[name]
+function KarpasModule.morphInto(name)
+    local entry = KarpasModule.sourceMap[name]
     local source = entry and entry.source
     local available = source and (source.Parent or entry.cached)
     local cloned
@@ -1412,15 +1416,15 @@ local function morphInto(name)
     end
     local fallback = not cloned
     if fallback then
-        if not allowThemedFallback then
+        if not KarpasModule.allowThemedFallback then
             notify("No accessible original model for " .. name .. "; enable themed fallback", true)
             return
         end
-        cloned = buildThemedMorph(name)
-    elseif not cachedSources[name] then
-        cacheObservedEntity(source)
+        cloned = KarpasModule.buildThemedMorph(name)
+    elseif not KarpasModule.cachedSources[name] then
+        KarpasModule.cacheObservedEntity(source)
     end
-    stopMorph(false)
+    KarpasModule.stopMorph(false)
     local rig = Instance.new("Model")
     rig.Name = "KarpaEntityVisual_LocalOnly"
     cloned.Parent = rig
@@ -1438,41 +1442,41 @@ local function morphInto(name)
             child:Destroy()
         end
     end
-    morphVisual = rig
-    morphCurrent = name
-    pcall(function() rig:ScaleTo(morphScale) end)
+    KarpasModule.morphVisual = rig
+    KarpasModule.morphCurrent = name
+    pcall(function() rig:ScaleTo(KarpasModule.morphScale) end)
     rig.Parent = Workspace
-    refreshMorphGlow()
+    KarpasModule.refreshMorphGlow()
     local mode = fallback and "THEMED LOCAL" or "ORIGINAL LOCAL"
     dashMorph.Text = "Morph: " .. name .. " (" .. mode .. ")"
-    morphSelectedLabel.Text = "ACTIVE: " .. string.upper(name) .. " / " .. mode
+    KarpasModule.morphSelectedLabel.Text = "ACTIVE: " .. string.upper(name) .. " / " .. mode
     notify(name .. " model applied: " .. mode .. ". Enable third person to view.")
 end
 
 section(morphPage, "Authentic entity morphs")
 label(morphPage, "Copies original DOORS model instances only when accessible in your current client. Your player is not changed on the server. Models without accessible geometry cannot be used.", 75)
-morphSelectedLabel = label(morphPage, "ACTIVE: HUMAN", 28, C.green, Enum.Font.GothamBold)
-morphScanLabel = label(morphPage, "Press Scan to find accessible original models", 42, C.muted)
+KarpasModule.morphSelectedLabel = label(morphPage, "ACTIVE: HUMAN", 28, C.green, Enum.Font.GothamBold)
+KarpasModule.morphScanLabel = label(morphPage, "Press Scan to find accessible original models", 42, C.muted)
 toggle(morphPage, "Use themed fallback if an original is unavailable", true, function(value)
-    allowThemedFallback = value
+    KarpasModule.allowThemedFallback = value
 end)
 button(morphPage, "SCAN ORIGINAL ENTITY ASSETS", function()
-    if scanningAssets then notify("Scan already in progress") return end
-    task.spawn(scanEntitySources)
+    if KarpasModule.scanningAssets then notify("Scan already in progress") return end
+    task.spawn(KarpasModule.scanEntitySources)
 end)
-button(morphPage, "REMOVE MORPH  /  HUMAN", function() stopMorph(true) end)
-local morphGlowToggle = toggle(morphPage, "Red cursed outline (local)", false, function(enabled)
-    morphAura = enabled
-    refreshMorphGlow()
+button(morphPage, "REMOVE MORPH  /  HUMAN", function() KarpasModule.stopMorph(true) end)
+KarpasModule.morphGlowToggle = toggle(morphPage, "Red cursed outline (local)", false, function(enabled)
+    KarpasModule.morphAura = enabled
+    KarpasModule.refreshMorphGlow()
 end)
-local morphScaleSlider = slider(morphPage, "Entity visual size %", 40, 200, 100, function(v)
-    morphScale = v / 100
-    if morphVisual then pcall(function() morphVisual:ScaleTo(morphScale) end) end
+KarpasModule.morphScaleSlider = slider(morphPage, "Entity visual size %", 40, 200, 100, function(v)
+    KarpasModule.morphScale = v / 100
+    if KarpasModule.morphVisual then pcall(function() KarpasModule.morphVisual:ScaleTo(KarpasModule.morphScale) end) end
 end)
-local morphOffsetSlider = slider(morphPage, "Visual vertical offset", -10, 10, 0, function(v)
-    morphFollowOffset = v / 2
+KarpasModule.morphOffsetSlider = slider(morphPage, "Visual vertical offset", -10, 10, 0, function(v)
+    KarpasModule.morphFollowOffset = v / 2
 end)
-local morphSearch = create("TextBox", {
+KarpasModule.morphSearch = create("TextBox", {
     Text = "",
     PlaceholderText = "Search: Rush, Figure, Grumble, A-90...",
     ClearTextOnFocus = false,
@@ -1484,55 +1488,55 @@ local morphSearch = create("TextBox", {
     BorderSizePixel = 0,
     Size = UDim2.new(1, 0, 0, 38)
 }, morphPage)
-rounded(morphSearch, 8)
-local zones = {"All", "Hotel", "Mines", "Backdoor", "Rooms", "Outdoors", "Other"}
-local zoneIndex = 1
-local zoneBtn
-local function updateMorphFilter()
-    local query = normalizedName(morphSearch.Text)
-    local zone = zones[zoneIndex]
-    for _, spec in ipairs(morphCatalog) do
-        local row = morphRows[spec[1]]
+rounded(KarpasModule.morphSearch, 8)
+KarpasModule.zones = {"All", "Hotel", "Mines", "Backdoor", "Rooms", "Outdoors", "Other"}
+KarpasModule.zoneIndex = 1
+KarpasModule.zoneBtn = nil
+function KarpasModule.updateMorphFilter()
+    local query = KarpasModule.normalizedName(KarpasModule.morphSearch.Text)
+    local zone = KarpasModule.zones[KarpasModule.zoneIndex]
+    for _, spec in ipairs(KarpasModule.morphCatalog) do
+        local row = KarpasModule.morphRows[spec[1]]
         if row then
-            local nameMatch = query == "" or normalizedName(spec[1]):find(query, 1, true) ~= nil
+            local nameMatch = query == "" or KarpasModule.normalizedName(spec[1]):find(query, 1, true) ~= nil
             row.Visible = nameMatch and (zone == "All" or spec[2] == zone)
         end
     end
 end
-zoneBtn = button(morphPage, "ZONE FILTER: ALL  ·  click to change", function()
-    zoneIndex = zoneIndex % #zones + 1
-    zoneBtn.Text = "ZONE FILTER: " .. string.upper(zones[zoneIndex]) .. "  ·  click to change"
-    updateMorphFilter()
+KarpasModule.zoneBtn = button(morphPage, "ZONE FILTER: ALL  ·  click to change", function()
+    KarpasModule.zoneIndex = KarpasModule.zoneIndex % #KarpasModule.zones + 1
+    KarpasModule.zoneBtn.Text = "ZONE FILTER: " .. string.upper(KarpasModule.zones[KarpasModule.zoneIndex]) .. "  ·  click to change"
+    KarpasModule.updateMorphFilter()
 end)
-connect(morphSearch:GetPropertyChangedSignal("Text"), updateMorphFilter)
+connect(KarpasModule.morphSearch:GetPropertyChangedSignal("Text"), KarpasModule.updateMorphFilter)
 section(morphPage, "Entity catalog  ·  tap to morph")
-for _, spec in ipairs(morphCatalog) do
+for _, spec in ipairs(KarpasModule.morphCatalog) do
     local name, zone = spec[1], spec[2]
     local row = button(morphPage, "○  " .. name .. "  /  " .. zone, function()
-        morphInto(name)
+        KarpasModule.morphInto(name)
     end)
-    morphRows[name] = row
+    KarpasModule.morphRows[name] = row
 end
 label(morphPage, "● = original model found. ○ = unavailable until that model loads. Rush/Figure/Seek can have rigs, effects or scripts that never replicate to clients; this tool won't create substitutes.", 90)
 
 -- Morph uses the actual loaded rig, following the player each frame. The
 -- original avatar becomes invisible locally and is fully restored on exit.
 connect(RunService.RenderStepped, function()
-    if not alive or not morphVisual then return end
+    if not alive or not KarpasModule.morphVisual then return end
     local root = rootPart()
     if not root then return end
-    hideRealAvatar()
-    local follow = root.CFrame * CFrame.new(0, morphFollowOffset, 0)
-    pcall(function() morphVisual:PivotTo(follow) end)
+    KarpasModule.hideRealAvatar()
+    local follow = root.CFrame * CFrame.new(0, KarpasModule.morphFollowOffset, 0)
+    pcall(function() KarpasModule.morphVisual:PivotTo(follow) end)
 end)
 
 -- ═══════════════════════════════════════════════════════════════
 -- ITEM LAB + KNOBS SANDBOX
 -- No server-side currency mutation or external remote events.
 -- ═══════════════════════════════════════════════════════════════
-local givenTools = {}
-local hotbarEnabled = true
-local hotbarFrame = create("Frame", {
+KarpasModule.givenTools = {}
+KarpasModule.hotbarEnabled = true
+KarpasModule.hotbarFrame = create("Frame", {
     Name = "KarpaItemHotbar",
     AnchorPoint = Vector2.new(0.5, 1),
     Position = UDim2.new(0.5, 0, 1, -72),
@@ -1541,17 +1545,17 @@ local hotbarFrame = create("Frame", {
     BackgroundTransparency = 0.12,
     BorderSizePixel = 0
 }, gui)
-rounded(hotbarFrame, 9)
-stroked(hotbarFrame, C.blue, 1, 0.46)
+rounded(KarpasModule.hotbarFrame, 9)
+stroked(KarpasModule.hotbarFrame, C.blue, 1, 0.46)
 create("UIListLayout", {
     FillDirection = Enum.FillDirection.Horizontal,
     HorizontalAlignment = Enum.HorizontalAlignment.Center,
     VerticalAlignment = Enum.VerticalAlignment.Center,
     Padding = UDim.new(0, 5),
     SortOrder = Enum.SortOrder.LayoutOrder
-}, hotbarFrame)
-local function equipLocalSlot(index)
-    local tool = givenTools[index]
+}, KarpasModule.hotbarFrame)
+function KarpasModule.equipLocalSlot(index)
+    local tool = KarpasModule.givenTools[index]
     if not tool or not tool.Parent then return end
     local hum = humanoid()
     if not hum then return end
@@ -1561,14 +1565,14 @@ local function equipLocalSlot(index)
         pcall(function() hum:EquipTool(tool) end)
     end
 end
-local function refreshLocalHotbar()
-    if not hotbarFrame or not hotbarFrame.Parent then return end
-    for _, child in ipairs(hotbarFrame:GetChildren()) do
+function KarpasModule.refreshLocalHotbar()
+    if not KarpasModule.hotbarFrame or not KarpasModule.hotbarFrame.Parent then return end
+    for _, child in ipairs(KarpasModule.hotbarFrame:GetChildren()) do
         if child:IsA("TextButton") then child:Destroy() end
     end
-    hotbarFrame.Visible = hotbarEnabled and #givenTools > 0
-    for i = 1, math.min(#givenTools, 8) do
-        local tool = givenTools[i]
+    KarpasModule.hotbarFrame.Visible = KarpasModule.hotbarEnabled and #KarpasModule.givenTools > 0
+    for i = 1, math.min(#KarpasModule.givenTools, 8) do
+        local tool = KarpasModule.givenTools[i]
         if tool and tool.Parent then
             local shortName = tool.Name:gsub("%s*%[LOCAL%]","")
             if #shortName > 12 then shortName = shortName:sub(1, 11) .. "…" end
@@ -1584,9 +1588,9 @@ local function refreshLocalHotbar()
                 AutoButtonColor = true,
                 BackgroundColor3 = tool.Parent == player.Character and C.blueDark or C.surface,
                 BorderSizePixel = 0
-            }, hotbarFrame)
+            }, KarpasModule.hotbarFrame)
             rounded(slot, 6)
-            connect(slot.MouseButton1Click, function() equipLocalSlot(i) end)
+            connect(slot.MouseButton1Click, function() KarpasModule.equipLocalSlot(i) end)
         end
     end
 end
@@ -1598,22 +1602,22 @@ connect(UserInputService.InputBegan, function(input, consumed)
         [Enum.KeyCode.Seven]=7, [Enum.KeyCode.Eight]=8
     }
     local slot = slotCodes[input.KeyCode]
-    if slot and hotbarEnabled then equipLocalSlot(slot) end
+    if slot and KarpasModule.hotbarEnabled then KarpasModule.equipLocalSlot(slot) end
 end)
 section(itemPage, "LOCAL inventory hotbar")
 label(itemPage, "Items created here appear in Karpa's own bottom-screen hotbar. Tap their slot or press 1-8 to equip. This does NOT inject server-issued DOORS inventory.", 94, C.muted)
 toggle(itemPage, "Show Karpa hotbar", true, function(v)
-    hotbarEnabled = v
-    refreshLocalHotbar()
+    KarpasModule.hotbarEnabled = v
+    KarpasModule.refreshLocalHotbar()
 end)
-local function cleanTools()
-    for _, tool in ipairs(givenTools) do
+function KarpasModule.cleanTools()
+    for _, tool in ipairs(KarpasModule.givenTools) do
         if tool and tool.Parent then tool:Destroy() end
     end
-    table.clear(givenTools)
-    refreshLocalHotbar()
+    table.clear(KarpasModule.givenTools)
+    KarpasModule.refreshLocalHotbar()
 end
-local function createLocalToy(display, color, lightType)
+function KarpasModule.createLocalToy(display, color, lightType)
     local backpack = player:FindFirstChildOfClass("Backpack")
     if not backpack then notify("Backpack unavailable", true) return end
     local tool = Instance.new("Tool")
@@ -1649,16 +1653,16 @@ local function createLocalToy(display, color, lightType)
         handle.Material = light.Enabled and Enum.Material.Neon or Enum.Material.SmoothPlastic
     end)
     tool.Parent = backpack
-    table.insert(givenTools, tool)
-    refreshLocalHotbar()
+    table.insert(KarpasModule.givenTools, tool)
+    KarpasModule.refreshLocalHotbar()
     notify(display .. " added to Karpa hotbar (client-only)")
 end
-local function findOriginalTool(name)
-    local wanted = normalizedName(name)
+function KarpasModule.findOriginalTool(name)
+    local wanted = KarpasModule.normalizedName(name)
     for _, root in ipairs({ReplicatedStorage, Workspace}) do
         for i, obj in ipairs(root:GetDescendants()) do
             if i % 800 == 0 then task.wait() end
-            if obj:IsA("Tool") and normalizedName(obj.Name) == wanted
+            if obj:IsA("Tool") and KarpasModule.normalizedName(obj.Name) == wanted
                 and not (player.Character and obj:IsDescendantOf(player.Character))
                 and not obj:IsDescendantOf(playerGui) then
                 return obj
@@ -1667,24 +1671,24 @@ local function findOriginalTool(name)
     end
     return nil
 end
-local fetchingItem = false
-local function grantLocalItem(name)
-    if fetchingItem then notify("Item search already active", true) return end
-    fetchingItem = true
+KarpasModule.fetchingItem = false
+function KarpasModule.grantLocalItem(name)
+    if KarpasModule.fetchingItem then notify("Item search already active", true) return end
+    KarpasModule.fetchingItem = true
     task.spawn(function()
-        local source = findOriginalTool(name)
-        if not alive then fetchingItem = false return end
+        local source = KarpasModule.findOriginalTool(name)
+        if not alive then KarpasModule.fetchingItem = false return end
         if not source then
             notify("Original template unavailable; creating a local " .. name .. " prop")
-            local color = normalizedName(name) == "crucifix" and Color3.fromRGB(220, 180, 75) or C.blue
-            createLocalToy(name, color, "PointLight")
-            fetchingItem = false
+            local color = KarpasModule.normalizedName(name) == "crucifix" and Color3.fromRGB(220, 180, 75) or C.blue
+            KarpasModule.createLocalToy(name, color, "PointLight")
+            KarpasModule.fetchingItem = false
             return
         end
         local backpack = player:FindFirstChildOfClass("Backpack")
         if not backpack then
             notify("Your Backpack is not available", true)
-            fetchingItem = false
+            KarpasModule.fetchingItem = false
             return
         end
         local success, copy = pcall(function() return source:Clone() end)
@@ -1693,17 +1697,17 @@ local function grantLocalItem(name)
         else
             copy:SetAttribute("KarpaLocalCopy", true)
             copy.Parent = backpack
-            table.insert(givenTools, copy)
-            refreshLocalHotbar()
+            table.insert(KarpasModule.givenTools, copy)
+            KarpasModule.refreshLocalHotbar()
             notify("Local " .. name .. " copied into Karpa hotbar; server might ignore it")
         end
-        fetchingItem = false
+        KarpasModule.fetchingItem = false
     end)
 end
 
 section(itemPage, "Original item templates")
 label(itemPage, "Copies an original DOORS Tool only if your client has access to a template. It is NOT a server-issued item and may lack gameplay effects or be removed.", 70)
-local itemInput = create("TextBox", {
+KarpasModule.itemInput = create("TextBox", {
     Text = "",
     PlaceholderText = "DOORS item name (e.g. Crucifix)",
     Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false,
@@ -1711,36 +1715,36 @@ local itemInput = create("TextBox", {
     BackgroundColor3 = C.surface, BorderSizePixel = 0,
     Size = UDim2.new(1, 0, 0, 38)
 }, itemPage)
-rounded(itemInput, 7)
+rounded(KarpasModule.itemInput, 7)
 button(itemPage, "FIND & COPY LOCAL TOOL TEMPLATE", function()
-    if itemInput.Text == "" then notify("Enter an item name", true) return end
-    grantLocalItem(itemInput.Text)
+    if KarpasModule.itemInput.Text == "" then notify("Enter an item name", true) return end
+    KarpasModule.grantLocalItem(KarpasModule.itemInput.Text)
 end)
 section(itemPage, "Quick-search item names")
 for _, name in ipairs({"Flashlight", "Crucifix", "Vitamins", "Lockpick", "Lighter", "Candle", "Lantern", "Skeleton Key", "Shears", "Bandage", "Glowstick", "Bulklight", "Shakelight"}) do
-    button(itemPage, "Try original  /  " .. name, function() grantLocalItem(name) end)
+    button(itemPage, "Try original  /  " .. name, function() KarpasModule.grantLocalItem(name) end)
 end
 section(itemPage, "Guaranteed local toys")
 button(itemPage, "Create cursed red lantern", function()
-    createLocalToy("Cursed Lantern", Color3.fromRGB(255, 44, 75), "PointLight")
+    KarpasModule.createLocalToy("Cursed Lantern", Color3.fromRGB(255, 44, 75), "PointLight")
 end)
 button(itemPage, "Create electric blue flashlight", function()
-    createLocalToy("Spectral Flashlight", C.blue, "SpotLight")
+    KarpasModule.createLocalToy("Spectral Flashlight", C.blue, "SpotLight")
 end)
 button(itemPage, "Create toxic green glowstick", function()
-    createLocalToy("Toxic Glowstick", Color3.fromRGB(61, 255, 107), "PointLight")
+    KarpasModule.createLocalToy("Toxic Glowstick", Color3.fromRGB(61, 255, 107), "PointLight")
 end)
 button(itemPage, "Clear items made by Karpa's Curse", function()
-    cleanTools()
+    KarpasModule.cleanTools()
     notify("Locally issued tools cleared")
 end)
 
 section(itemPage, "REAL run Gold helper")
 label(itemPage, "Attempts collection of existing nearby GoldPile loot prompts. It cannot create spendable Gold or Knobs; only the game server can credit real purchases at Jeff's Shop.", 96, C.muted)
-local goldAttempted = setmetatable({}, {__mode = "k"})
-local goldAttempts = 0
-local goldStatus = label(itemPage, "Nearby gold attempts: 0", 28, C.text)
-local function collectNearbyGold()
+KarpasModule.goldAttempted = setmetatable({}, {__mode = "k"})
+KarpasModule.goldAttempts = 0
+KarpasModule.goldStatus = label(itemPage, "Nearby gold attempts: 0", 28, C.text)
+function KarpasModule.collectNearbyGold()
     local root = rootPart()
     local rooms = loadedRooms()
     if not root or not rooms then return end
@@ -1749,7 +1753,7 @@ local function collectNearbyGold()
     for _, room in ipairs(rooms:GetChildren()) do
         if tonumber(room.Name) then
             for _, obj in ipairs(room:GetDescendants()) do
-                if normalizedName(obj.Name) == "goldpile" and (obj:IsA("Model") or obj:IsA("BasePart")) then
+                if KarpasModule.normalizedName(obj.Name) == "goldpile" and (obj:IsA("Model") or obj:IsA("BasePart")) then
                     for _, prompt in ipairs(obj:GetDescendants()) do
                         if prompt:IsA("ProximityPrompt") and prompt.Enabled then
                             local parent = prompt.Parent
@@ -1757,15 +1761,15 @@ local function collectNearbyGold()
                                 parent:IsA("BasePart") and parent.Position or
                                 parent:IsA("Model") and parent:GetPivot().Position)
                             if position and (root.Position-position).Magnitude < math.min(12, prompt.MaxActivationDistance)
-                                and now - (goldAttempted[prompt] or -100) >= 3.5 then
-                                goldAttempted[prompt] = now
+                                and now - (KarpasModule.goldAttempted[prompt] or -100) >= 3.5 then
+                                KarpasModule.goldAttempted[prompt] = now
                                 pcall(function()
                                     prompt:InputHoldBegin()
                                     task.delay(math.clamp(prompt.HoldDuration, 0, 8) + 0.15, function()
                                         if prompt.Parent then pcall(function() prompt:InputHoldEnd() end) end
                                     end)
                                 end)
-                                goldAttempts = goldAttempts + 1
+                                KarpasModule.goldAttempts = KarpasModule.goldAttempts + 1
                                 tried = tried + 1
                                 if tried >= 5 then return end
                             end
@@ -1776,20 +1780,20 @@ local function collectNearbyGold()
         end
     end
 end
-local goldAutoToggle = toggle(itemPage, "Auto collect nearby GoldPiles", false, function(enabled)
+KarpasModule.goldAutoToggle = toggle(itemPage, "Auto collect nearby GoldPiles", false, function(enabled)
     state.autoGold = enabled
     notify(enabled and "Nearby gold collection attempts enabled" or "Gold auto-collect disabled")
 end)
 button(itemPage, "Try collecting nearby Gold now", function()
-    collectNearbyGold()
-    goldStatus.Text = "Gold pickup attempts: " .. goldAttempts .. " (not verified purchases)"
+    KarpasModule.collectNearbyGold()
+    KarpasModule.goldStatus.Text = "Gold pickup attempts: " .. KarpasModule.goldAttempts .. " (not verified purchases)"
 end)
 task.spawn(function()
     while alive do
         if state.autoGold then
-            pcall(collectNearbyGold)
-            if goldStatus and goldStatus.Parent then
-                goldStatus.Text = "Gold pickup attempts: " .. goldAttempts .. " (server verifies balance)"
+            pcall(KarpasModule.collectNearbyGold)
+            if KarpasModule.goldStatus and KarpasModule.goldStatus.Parent then
+                KarpasModule.goldStatus.Text = "Gold pickup attempts: " .. KarpasModule.goldAttempts .. " (server verifies balance)"
             end
         end
         task.wait(1.2)
@@ -1798,19 +1802,19 @@ end)
 
 section(itemPage, "Knobs  /  sandbox only")
 label(itemPage, "DOORS stores real Knobs server-side. These counters are an isolated local simulator, not spendable currency or a shop bypass.", 64)
-local sandboxKnobs = 0
-local knobText = label(itemPage, "SIMULATED KNOBS: 0", 36, C.green, Enum.Font.GothamBold)
-local function addSandboxKnobs(amount)
-    sandboxKnobs = math.clamp(sandboxKnobs + amount, 0, 999999999)
-    knobText.Text = "SIMULATED KNOBS: " .. tostring(sandboxKnobs)
+KarpasModule.sandboxKnobs = 0
+KarpasModule.knobText = label(itemPage, "SIMULATED KNOBS: 0", 36, C.green, Enum.Font.GothamBold)
+function KarpasModule.addSandboxKnobs(amount)
+    KarpasModule.sandboxKnobs = math.clamp(KarpasModule.sandboxKnobs + amount, 0, 999999999)
+    KarpasModule.knobText.Text = "SIMULATED KNOBS: " .. tostring(KarpasModule.sandboxKnobs)
     notify("Sandbox counter only — real Knobs unchanged")
 end
-button(itemPage, "+50 simulated Knobs", function() addSandboxKnobs(50) end)
-button(itemPage, "+500 simulated Knobs", function() addSandboxKnobs(500) end)
-button(itemPage, "+10,000 simulated Knobs", function() addSandboxKnobs(10000) end)
+button(itemPage, "+50 simulated Knobs", function() KarpasModule.addSandboxKnobs(50) end)
+button(itemPage, "+500 simulated Knobs", function() KarpasModule.addSandboxKnobs(500) end)
+button(itemPage, "+10,000 simulated Knobs", function() KarpasModule.addSandboxKnobs(10000) end)
 button(itemPage, "Reset sandbox Knobs", function()
-    sandboxKnobs = 0
-    knobText.Text = "SIMULATED KNOBS: 0"
+    KarpasModule.sandboxKnobs = 0
+    KarpasModule.knobText.Text = "SIMULATED KNOBS: 0"
 end)
 
 -- Red entity atmosphere effect: entirely local, removable.
@@ -1861,7 +1865,7 @@ label(toolsPage, "This does not automatically grant achievements or bypass proxi
 section(toolsPage, "DOORS achievements")
 label(toolsPage, "Use the Achievements tab for goal guidance and in-range interaction automation. Only the DOORS server decides whether an achievement is unlocked.", 76)
 -- =========================================
--- DOORS ACHIEVEMENT ASSISTANT (V2.5)
+-- DOORS ACHIEVEMENT ASSISTANT (V2.5.1)
 -- No server remotes, BadgeService award calls, or fake completed badges.
 -- The auto actions can only attempt nearby, currently visible prompts.
 -- Actual achievements and progress are controlled by DOORS.
@@ -2134,17 +2138,17 @@ end)
 section(toolsPage, "Lifecycle")
 local resetButton = button(toolsPage, "Reset all toggles and movement")
 local unloadButton = button(toolsPage, "Unload Karpa's Curse")
-label(toolsPage, "No remote code, web requests, external assets, or credential access.  •  V2.5", 61)
+label(toolsPage, "No remote code, web requests, external assets, or credential access.  •  V2.5.1", 61)
 
 local function resetAll()
     queuedDoorNumber = nil
-    stopMorph(false)
-    morphGlowToggle.set(false)
-    morphScaleSlider.set(100)
-    morphOffsetSlider.set(0)
-    cleanTools()
-    sandboxKnobs = 0
-    knobText.Text = "SIMULATED KNOBS: 0"
+    KarpasModule.stopMorph(false)
+    KarpasModule.morphGlowToggle.set(false)
+    KarpasModule.morphScaleSlider.set(100)
+    KarpasModule.morphOffsetSlider.set(0)
+    KarpasModule.cleanTools()
+    KarpasModule.sandboxKnobs = 0
+    KarpasModule.knobText.Text = "SIMULATED KNOBS: 0"
     redVisionToggle.set(false)
     noclipToggle.set(false)
     entityEspToggle.set(false)
@@ -2160,7 +2164,7 @@ local function resetAll()
     speedSlider.set(16)
     speedLockToggle.set(false)
     autoLootToggle.set(false)
-    goldAutoToggle.set(false)
+    KarpasModule.goldAutoToggle.set(false)
     autoDoorToggle.set(false)
     autoSwitchToggle.set(false)
     autoHideToggle.set(false)
@@ -2178,16 +2182,16 @@ connect(resetButton.MouseButton1Click, function() resetAll() end)
 local function cleanup()
     if not alive then return end
     queuedDoorNumber = nil
-    stopMorph(false)
-    morphGlowToggle.set(false)
-    cleanTools()
+    KarpasModule.stopMorph(false)
+    KarpasModule.morphGlowToggle.set(false)
+    KarpasModule.cleanTools()
     thirdPersonToggle.set(false)
     restoreThirdPerson()
     selectedFlexTitle = ""
     refreshFlexDisplay()
     redVisionToggle.set(false)
-    for _, saved in pairs(cachedSources) do if saved then saved:Destroy() end end
-    table.clear(cachedSources)
+    for _, saved in pairs(KarpasModule.cachedSources) do if saved then saved:Destroy() end end
+    table.clear(KarpasModule.cachedSources)
     -- Restore the client effects before destroying the interface.
     state.noclip = false
     state.speedLock = false
@@ -2463,4 +2467,40 @@ for id, page in pairs(pages) do
     tabButtons[id].BackgroundColor3 = active and C.blueDark or C.surface
     tabButtons[id].TextColor3 = active and C.text or C.muted
 end
-notify("V2.5 / Entity Lab ready  ·  scan models in MORPHS")
+notify("V2.5.1 / Entity Lab ready  ·  scan models in MORPHS")
+
+end, function(message)
+    return tostring(message)
+end)
+if not bootOK then
+    warn("[Karpa's Curse / startup] " .. tostring(bootError))
+    pcall(function()
+        local me = game:GetService("Players").LocalPlayer
+        local parent = me and me:FindFirstChildOfClass("PlayerGui")
+        if not parent then return end
+        local previous = parent:FindFirstChild("KarpaStartupError")
+        if previous then previous:Destroy() end
+        local screen = Instance.new("ScreenGui")
+        screen.Name = "KarpaStartupError"
+        screen.ResetOnSpawn = false
+        screen.DisplayOrder = 9999
+        screen.Parent = parent
+        local panel = Instance.new("TextLabel")
+        panel.AnchorPoint = Vector2.new(0.5, 0)
+        panel.Position = UDim2.fromScale(0.5, 0.07)
+        panel.Size = UDim2.new(0.84, 0, 0, 116)
+        panel.BackgroundColor3 = Color3.fromRGB(30, 6, 12)
+        panel.TextColor3 = Color3.fromRGB(255, 235, 235)
+        panel.Font = Enum.Font.GothamSemibold
+        panel.TextSize = 14
+        panel.TextWrapped = true
+        panel.Text = "KARPA'S CURSE / STARTUP ERROR\n" .. tostring(bootError):sub(1, 350)
+        panel.Parent = screen
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 10)
+        corner.Parent = panel
+        task.delay(30, function()
+            if screen.Parent then screen:Destroy() end
+        end)
+    end)
+end
