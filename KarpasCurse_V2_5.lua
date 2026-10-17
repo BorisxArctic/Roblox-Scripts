@@ -962,6 +962,38 @@ local function restoreHealth()
     end
 end
 
+-- Experimental collision shield. Some DOORS builds check client hitboxes,
+-- but server-authoritative damage cannot be disabled by this.
+local collisionGuardBackup = setmetatable({}, {__mode = "k"})
+local function applyCollisionGuard()
+    if not state.godmode then return end
+    local char = player.Character
+    local hitbox = char and (char:FindFirstChild("Collision") or char:FindFirstChild("CollisionPart"))
+    if not hitbox or not hitbox:IsA("BasePart") then return end
+    if not collisionGuardBackup[hitbox] then
+        collisionGuardBackup[hitbox] = {
+            size = hitbox.Size, canTouch = hitbox.CanTouch, canQuery = hitbox.CanQuery
+        }
+    end
+    pcall(function()
+        hitbox.Size = Vector3.new(0.55, 0.55, 0.55)
+        hitbox.CanTouch = false
+        hitbox.CanQuery = false
+    end)
+end
+local function restoreCollisionGuard()
+    for hitbox, saved in pairs(collisionGuardBackup) do
+        if hitbox.Parent then
+            pcall(function()
+                hitbox.Size = saved.size
+                hitbox.CanTouch = saved.canTouch
+                hitbox.CanQuery = saved.canQuery
+            end)
+        end
+        collisionGuardBackup[hitbox] = nil
+    end
+end
+
 local function restoreCollisions()
     for part, original in pairs(collisionBackup) do
         if part.Parent then part.CanCollide = original end
@@ -1010,10 +1042,12 @@ local godmodeToggle = toggle(playerPage, "Godmode (local attempt)", false, funct
     state.godmode = enabled
     if enabled then
         applySurvivalGuard(humanoid())
-        notify("Local survival guard on; not server godmode")
+        applyCollisionGuard()
+        notify("Experimental health and collision shield on; not guaranteed")
     else
         restoreHealth()
-        notify("Local survival guard off")
+        restoreCollisionGuard()
+        notify("Survival and collision shield off")
     end
 end)
 label(playerPage, "Continuously attempts to protect local Humanoid health and death state. DOORS' server can still damage, kill or respawn you.", 82)
@@ -2177,6 +2211,7 @@ local function cleanup()
     if Workspace.CurrentCamera then Workspace.CurrentCamera.FieldOfView = originalFov end
     restoreSpeeds()
     restoreHealth()
+    restoreCollisionGuard()
     if cameraConnection then cameraConnection:Disconnect() end
     alive = false
     for _, connection in ipairs(connections) do connection:Disconnect() end
@@ -2264,7 +2299,7 @@ connect(player.CharacterAdded, function(character)
     local hum = character:WaitForChild("Humanoid", 6)
     if alive and hum then
         if state.speedLock then applySpeed(hum) end
-        if state.godmode then applySurvivalGuard(hum) end
+        if state.godmode then applySurvivalGuard(hum); applyCollisionGuard() end
     end
 end)
 
@@ -2274,7 +2309,7 @@ connect(RunService.RenderStepped, function()
     if not alive then return end
     local hum = humanoid()
     if state.speedLock then applySpeed(hum) end
-    if state.godmode then applySurvivalGuard(hum) end
+    if state.godmode then applySurvivalGuard(hum); applyCollisionGuard() end
 end)
 
 -- Detect sudden movement opposite to the held walking direction. This is
