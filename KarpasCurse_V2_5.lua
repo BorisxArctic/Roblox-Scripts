@@ -1805,6 +1805,74 @@ button(achievementPage, "<  Previous achievement goal", function()
     showGoal()
 end)
 
+section(achievementPage, "Display achievement above head")
+label(achievementPage, "Enter a DOORS achievement's internal ID or name. First try the game's official selection remote (if available and allowed); the local title preview works for any text but does not unlock the achievement.", 115, C.muted)
+local selectedFlexTitle = ""
+local localFlexBillboard
+local flexEntry = create("TextBox", {
+    Text = "Hotel Hell", PlaceholderText = "Achievement name or internal ID",
+    TextColor3 = C.text, PlaceholderColor3 = C.muted,
+    Font = Enum.Font.Gotham, TextSize = 13,
+    BackgroundColor3 = C.surface, BorderSizePixel = 0,
+    ClearTextOnFocus = false, Size = UDim2.new(1, 0, 0, 39)
+}, achievementPage)
+rounded(flexEntry, 7)
+local function refreshFlexDisplay()
+    if localFlexBillboard then localFlexBillboard:Destroy(); localFlexBillboard = nil end
+    if selectedFlexTitle == "" then return end
+    local char = player.Character
+    local head = char and char:FindFirstChild("Head")
+    if not head then return end
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "KarpaLocalAchievementDisplay"
+    billboard.Size = UDim2.fromOffset(250, 50)
+    billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.7, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = 130
+    billboard.Adornee = head
+    billboard.Parent = gui
+    local textLabel = Instance.new("TextLabel")
+    textLabel.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
+    textLabel.BackgroundTransparency = 0.17
+    textLabel.Size = UDim2.fromScale(1, 1)
+    textLabel.Text = "✦ " .. selectedFlexTitle .. " ✦"
+    textLabel.TextWrapped = true
+    textLabel.Font = Enum.Font.GothamBold
+    textLabel.TextSize = 16
+    textLabel.TextColor3 = Color3.fromRGB(255, 210, 90)
+    textLabel.Parent = billboard
+    rounded(textLabel, 8)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = C.blue
+    stroke.Thickness = 1
+    stroke.Parent = textLabel
+    localFlexBillboard = billboard
+end
+local function chooseFlexDisplay()
+    selectedFlexTitle = flexEntry.Text:sub(1, 65)
+    if selectedFlexTitle == "" then notify("Enter an achievement name", true) return end
+    refreshFlexDisplay()
+    local info = ReplicatedStorage:FindFirstChild("EntityInfo")
+    local remote = info and info:FindFirstChild("FlexAchievement")
+    if remote and remote:IsA("RemoteEvent") then
+        local ok = pcall(function() remote:FireServer(selectedFlexTitle) end)
+        notify(ok and "Official achievement selection requested; local title shown" or "Only local title was applied")
+    else
+        notify("Local title applied; official selection remote unavailable")
+    end
+end
+button(achievementPage, "DISPLAY SELECTED ACHIEVEMENT", chooseFlexDisplay)
+button(achievementPage, "Remove custom title", function()
+    selectedFlexTitle = ""
+    refreshFlexDisplay()
+    notify("Local title removed")
+end)
+connect(player.CharacterAdded, function()
+    task.delay(1, function()
+        if alive then refreshFlexDisplay() end
+    end)
+end)
+
 section(achievementPage, "Auto interactions")
 label(achievementPage, "Uses Roblox's normal ProximityPrompt input API, with original hold times and activation distances. Leave options off for challenge runs that ban certain actions.", 85)
 local autoLootToggle = toggle(achievementPage, "Auto collect nearby items", false, function(v)
@@ -1992,6 +2060,8 @@ local function resetAll()
     gravityToggle.set(false)
     godmodeToggle.set(false)
     thirdPersonToggle.set(false)
+    selectedFlexTitle = ""
+    refreshFlexDisplay()
     speedSlider.set(16)
     speedLockToggle.set(false)
     autoLootToggle.set(false)
@@ -2017,6 +2087,8 @@ local function cleanup()
     cleanTools()
     thirdPersonToggle.set(false)
     restoreThirdPerson()
+    selectedFlexTitle = ""
+    refreshFlexDisplay()
     redVisionToggle.set(false)
     for _, saved in pairs(cachedSources) do if saved then saved:Destroy() end end
     table.clear(cachedSources)
