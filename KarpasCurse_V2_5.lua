@@ -1701,6 +1701,67 @@ button(itemPage, "Clear items made by Karpa's Curse", function()
     notify("Locally issued tools cleared")
 end)
 
+section(itemPage, "REAL run Gold helper")
+label(itemPage, "Attempts collection of existing nearby GoldPile loot prompts. It cannot create spendable Gold or Knobs; only the game server can credit real purchases at Jeff's Shop.", 96, C.muted)
+local goldAttempted = setmetatable({}, {__mode = "k"})
+local goldAttempts = 0
+local goldStatus = label(itemPage, "Nearby gold attempts: 0", 28, C.text)
+local function collectNearbyGold()
+    local root = rootPart()
+    local rooms = loadedRooms()
+    if not root or not rooms then return end
+    local now = os.clock()
+    local tried = 0
+    for _, room in ipairs(rooms:GetChildren()) do
+        if tonumber(room.Name) then
+            for _, obj in ipairs(room:GetDescendants()) do
+                if normalizedName(obj.Name) == "goldpile" and (obj:IsA("Model") or obj:IsA("BasePart")) then
+                    for _, prompt in ipairs(obj:GetDescendants()) do
+                        if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                            local parent = prompt.Parent
+                            local position = parent and (parent:IsA("Attachment") and parent.WorldPosition or
+                                parent:IsA("BasePart") and parent.Position or
+                                parent:IsA("Model") and parent:GetPivot().Position)
+                            if position and (root.Position-position).Magnitude < math.min(12, prompt.MaxActivationDistance)
+                                and now - (goldAttempted[prompt] or -100) >= 3.5 then
+                                goldAttempted[prompt] = now
+                                pcall(function()
+                                    prompt:InputHoldBegin()
+                                    task.delay(math.clamp(prompt.HoldDuration, 0, 8) + 0.15, function()
+                                        if prompt.Parent then pcall(function() prompt:InputHoldEnd() end) end
+                                    end)
+                                end)
+                                goldAttempts = goldAttempts + 1
+                                tried = tried + 1
+                                if tried >= 5 then return end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+toggle(itemPage, "Auto collect nearby GoldPiles", false, function(enabled)
+    state.autoGold = enabled
+    notify(enabled and "Nearby gold collection attempts enabled" or "Gold auto-collect disabled")
+end)
+button(itemPage, "Try collecting nearby Gold now", function()
+    collectNearbyGold()
+    goldStatus.Text = "Gold pickup attempts: " .. goldAttempts .. " (not verified purchases)"
+end)
+task.spawn(function()
+    while alive do
+        if state.autoGold then
+            pcall(collectNearbyGold)
+            if goldStatus and goldStatus.Parent then
+                goldStatus.Text = "Gold pickup attempts: " .. goldAttempts .. " (server verifies balance)"
+            end
+        end
+        task.wait(1.2)
+    end
+end)
+
 section(itemPage, "Knobs  /  sandbox only")
 label(itemPage, "DOORS stores real Knobs server-side. These counters are an isolated local simulator, not spendable currency or a shop bypass.", 64)
 local sandboxKnobs = 0
@@ -2106,6 +2167,7 @@ local function cleanup()
     state.autoDoors = false
     state.autoSwitches = false
     state.autoHide = false
+    state.autoGold = false
     restoreCollisions()
     restoreEntities()
     clearHighlights(doorHighlights)
