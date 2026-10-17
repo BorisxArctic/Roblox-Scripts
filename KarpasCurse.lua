@@ -1,4 +1,4 @@
--- KARPA'S CURSE | V2.4
+-- KARPA'S CURSE | V2.5
 -- Roblox DOORS | Client-side utility UI (speed persistence + survival tools)
 -- No HTTP requests, remote code, or hidden downloads.
 -- NOTE: Server-authoritative mechanics (health, badges, entity damage, room
@@ -60,6 +60,8 @@ local state = {
     speedLock = false,
     godmode = false,
     noclip = false,
+    thirdPerson = false,
+    autoGold = false,
     doorESP = false,
     entityESP = false,
     hiddenEntities = false,
@@ -195,7 +197,7 @@ create("TextLabel", {
     Size = UDim2.new(1, -130, 0, 25)
 }, header)
 create("TextLabel", {
-    Text = "V2.4   /   ENTITY LAB  ·  DOORS",
+    Text = "V2.5   /   ENTITY LAB  ·  DOORS",
     Font = Enum.Font.GothamMedium,
     TextSize = 10,
     TextColor3 = C.blue,
@@ -407,7 +409,7 @@ local function button(parent, text, callback)
         connect(item.MouseButton1Click, function()
             local ok, errorText = pcall(callback)
             if not ok then
-                warn("[Karpa's Curse V2.4] " .. tostring(errorText))
+                warn("[Karpa's Curse V2.5] " .. tostring(errorText))
                 notify("Action failed; see client console", true)
             end
         end)
@@ -449,7 +451,7 @@ local function toggle(parent, text, initial, callback)
         animate(knob, {Position = value and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3)})
         local ok, errorText = pcall(callback, value)
         if not ok then
-            warn("[Karpa's Curse V2.4] " .. tostring(errorText))
+            warn("[Karpa's Curse V2.5] " .. tostring(errorText))
             notify("Toggle failed; see client console", true)
         end
     end
@@ -494,7 +496,7 @@ local function slider(parent, text, minimum, maximum, initial, callback)
         fill.Size = UDim2.fromScale(fraction, 1)
         textLabel.Text = text .. "   " .. tostring(value)
         local ok, errorText = pcall(callback, value)
-        if not ok then warn("[Karpa's Curse V2.4] " .. tostring(errorText)) end
+        if not ok then warn("[Karpa's Curse V2.5] " .. tostring(errorText)) end
     end
     set(initial)
     local sliding = false
@@ -960,6 +962,38 @@ local function restoreHealth()
     end
 end
 
+-- Experimental collision shield. Some DOORS builds check client hitboxes,
+-- but server-authoritative damage cannot be disabled by this.
+local collisionGuardBackup = setmetatable({}, {__mode = "k"})
+local function applyCollisionGuard()
+    if not state.godmode then return end
+    local char = player.Character
+    local hitbox = char and (char:FindFirstChild("Collision") or char:FindFirstChild("CollisionPart"))
+    if not hitbox or not hitbox:IsA("BasePart") then return end
+    if not collisionGuardBackup[hitbox] then
+        collisionGuardBackup[hitbox] = {
+            size = hitbox.Size, canTouch = hitbox.CanTouch, canQuery = hitbox.CanQuery
+        }
+    end
+    pcall(function()
+        hitbox.Size = Vector3.new(0.55, 0.55, 0.55)
+        hitbox.CanTouch = false
+        hitbox.CanQuery = false
+    end)
+end
+local function restoreCollisionGuard()
+    for hitbox, saved in pairs(collisionGuardBackup) do
+        if hitbox.Parent then
+            pcall(function()
+                hitbox.Size = saved.size
+                hitbox.CanTouch = saved.canTouch
+                hitbox.CanQuery = saved.canQuery
+            end)
+        end
+        collisionGuardBackup[hitbox] = nil
+    end
+end
+
 local function restoreCollisions()
     for part, original in pairs(collisionBackup) do
         if part.Parent then part.CanCollide = original end
@@ -1008,13 +1042,76 @@ local godmodeToggle = toggle(playerPage, "Godmode (local attempt)", false, funct
     state.godmode = enabled
     if enabled then
         applySurvivalGuard(humanoid())
-        notify("Local survival guard on; not server godmode")
+        applyCollisionGuard()
+        notify("Experimental health and collision shield on; not guaranteed")
     else
         restoreHealth()
-        notify("Local survival guard off")
+        restoreCollisionGuard()
+        notify("Survival and collision shield off")
     end
 end)
 label(playerPage, "Continuously attempts to protect local Humanoid health and death state. DOORS' server can still damage, kill or respawn you.", 82)
+
+
+-- Third-person view uses a local scriptable follow-camera, because DOORS
+-- can re-enable LockFirstPerson during gameplay.
+local cameraBackup = {
+    mode = player.CameraMode,
+    minZoom = player.CameraMinZoomDistance,
+    maxZoom = player.CameraMaxZoomDistance,
+    cameraType = Workspace.CurrentCamera and Workspace.CurrentCamera.CameraType or Enum.CameraType.Custom
+}
+local thirdPersonDistance = 9
+local function restoreThirdPerson()
+    state.thirdPerson = false
+    pcall(function()
+        player.CameraMode = cameraBackup.mode
+        player.CameraMinZoomDistance = cameraBackup.minZoom
+        player.CameraMaxZoomDistance = cameraBackup.maxZoom
+        local camera = Workspace.CurrentCamera
+        if camera then
+            camera.CameraType = cameraBackup.cameraType
+            if humanoid() then camera.CameraSubject = humanoid() end
+        end
+    end)
+end
+local function thirdPersonFrame()
+    if not alive or not state.thirdPerson then return end
+    local camera = Workspace.CurrentCamera
+    local root = rootPart()
+    if not camera or not root then return end
+    local center = root.Position + Vector3.new(0, 2, 0)
+    local requested = center - root.CFrame.LookVector * thirdPersonDistance + Vector3.new(0, 2, 0)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = player.Character and {player.Character} or {}
+    params.IgnoreWater = true
+    local hit = Workspace:Raycast(center, requested - center, params)
+    local cameraPosition = hit and (hit.Position + hit.Normal * 0.65) or requested
+    camera.CameraType = Enum.CameraType.Scriptable
+    camera.CFrame = CFrame.lookAt(cameraPosition, center)
+    camera.Focus = CFrame.new(center)
+end
+section(visualPage, "Camera controls")
+local thirdPersonToggle = toggle(visualPage, "Third-person view", false, function(enabled)
+    state.thirdPerson = enabled
+    if enabled then
+        pcall(function()
+            player.CameraMode = Enum.CameraMode.Classic
+            player.CameraMinZoomDistance = 0.5
+            player.CameraMaxZoomDistance = 20
+        end)
+        notify("Third person enabled - follows avatar")
+    else
+        restoreThirdPerson()
+        notify("Default camera restored")
+    end
+end)
+slider(visualPage, "Camera distance", 4, 16, 9, function(value)
+    thirdPersonDistance = value
+end)
+label(visualPage, "Local follow camera, controlled by character direction. Disable to return to the normal DOORS camera.", 80, C.muted)
+connect(RunService.RenderStepped, thirdPersonFrame)
 
 -- ═══════════════════════════════════════════════════════════════
 -- TRUE-ASSET VISUAL MORPH LAB
@@ -1025,8 +1122,8 @@ label(playerPage, "Continuously attempts to protect local Humanoid health and de
 local morphCatalog = {
     {"Rush", "Hotel", {"Rush", "RushMoving", "RushNew", "RushEntity"}},
     {"Ambush", "Hotel", {"Ambush", "AmbushMoving", "AmbushEntity"}},
-    {"Figure", "Hotel", {"Figure", "FigureRig", "FigureModel"}},
-    {"Seek", "Hotel", {"Seek", "SeekMoving", "SeekRig", "SeekMonster"}},
+    {"Figure", "Hotel", {"Figure", "FigureRig", "FigureModel", "FigureRagdoll"}},
+    {"Seek", "Hotel", {"Seek", "SeekMoving", "SeekRig", "SeekMonster", "SeekRagdoll"}},
     {"Eyes", "Hotel", {"Eyes", "EyesEntity"}},
     {"Screech", "Hotel", {"Screech", "ScreechRig"}},
     {"Halt", "Hotel", {"Halt", "HaltEntity"}},
@@ -1253,37 +1350,75 @@ local function refreshMorphGlow()
     morphGlow = glow
 end
 
+
+-- Rendered fallback for entities whose original model is not replicated.
+-- Clearly labelled as an interpretation, never as an original DOORS mesh.
+local allowThemedFallback = true
+local function buildThemedMorph(name)
+    local rig = Instance.new("Model")
+    rig.Name = "KarpaThemed_" .. normalizedName(name)
+    local humanoidShape = name == "Figure" or name == "Seek"
+        or name == "Grumble" or name == "Queen Grumble"
+    local color = name == "Seek" and Color3.fromRGB(10, 10, 14)
+        or name == "Ambush" and Color3.fromRGB(40, 140, 95)
+        or humanoidShape and Color3.fromRGB(121, 52, 50)
+        or Color3.fromRGB(132, 18, 36)
+    local function block(label, shape, size, position, color3)
+        local p = Instance.new("Part")
+        p.Name = label
+        p.Shape = shape
+        p.Size = size
+        p.CFrame = CFrame.new(position)
+        p.Anchored = true
+        p.CanCollide = false
+        p.CanTouch = false
+        p.CanQuery = false
+        p.Color = color3
+        p.Material = Enum.Material.Neon
+        p.Parent = rig
+        return p
+    end
+    if humanoidShape then
+        block("Body", Enum.PartType.Block, Vector3.new(2, 3, 1.2), Vector3.new(0, 1, 0), color)
+        block("Head", Enum.PartType.Ball, Vector3.new(1.55, 1.55, 1.55), Vector3.new(0, 3.1, 0), color)
+        for _, side in ipairs({-1, 1}) do
+            block("Arm", Enum.PartType.Block, Vector3.new(0.65, 3.5, 0.6), Vector3.new(side*1.55, 0.5, 0), color)
+            block("Leg", Enum.PartType.Block, Vector3.new(0.75, 3, 0.75), Vector3.new(side*0.6, -2.1, 0), color)
+        end
+        block("Eye", Enum.PartType.Ball, Vector3.new(0.8, 0.8, 0.3),
+            Vector3.new(0, 3.3, -0.7), Color3.fromRGB(255, 255, 245))
+    else
+        block("Main", Enum.PartType.Ball, Vector3.new(4, 4, 3.6), Vector3.new(0, 1.5, 0), color)
+        for _, side in ipairs({-1, 1}) do
+            block("Eye", Enum.PartType.Ball, Vector3.new(0.85, 0.85, 0.35),
+                Vector3.new(side*0.9, 2.1, -1.5), Color3.fromRGB(255, 255, 245))
+        end
+        block("Mouth", Enum.PartType.Block, Vector3.new(1.65, 0.4, 0.3),
+            Vector3.new(0, 0.8, -1.7), Color3.fromRGB(0, 0, 0))
+    end
+    return rig
+end
 local function morphInto(name)
     local entry = sourceMap[name]
     local source = entry and entry.source
-    if not source or (not source.Parent and not (entry and entry.cached)) then
-        if scanningAssets then
-            notify("Asset scan in progress; try again shortly", true)
+    local available = source and (source.Parent or entry.cached)
+    local cloned
+    if available then
+        local originalArchivable = source.Archivable
+        pcall(function() source.Archivable = true end)
+        local ok, result = pcall(function() return source:Clone() end)
+        pcall(function() source.Archivable = originalArchivable end)
+        if ok then cloned = result end
+    end
+    local fallback = not cloned
+    if fallback then
+        if not allowThemedFallback then
+            notify("No accessible original model for " .. name .. "; enable themed fallback", true)
             return
         end
-        notify("Checking loaded DOORS models for " .. name)
-        task.spawn(function()
-            scanEntitySources()
-            if alive and sourceMap[name] and (sourceMap[name].cached or sourceMap[name].source.Parent) then
-                morphInto(name)
-            elseif alive then
-                notify("No accessible original model: " .. name, true)
-            end
-        end)
-        return
-    end
-    local cloned
-    local ok, reason = pcall(function() cloned = source:Clone() end)
-    if not ok or not cloned then
-        notify("Original " .. name .. " model cannot be cloned", true)
-        return
-    end
-    -- Validate before removing a currently active morph.
-    if not cachedSources[name] then cacheObservedEntity(source) end
-    if not (cloned:IsA("Model") or cloned:IsA("BasePart")) then
-        cloned:Destroy()
-        notify("This entity has no morphable geometry", true)
-        return
+        cloned = buildThemedMorph(name)
+    elseif not cachedSources[name] then
+        cacheObservedEntity(source)
     end
     stopMorph(false)
     local rig = Instance.new("Model")
@@ -1305,21 +1440,22 @@ local function morphInto(name)
     end
     morphVisual = rig
     morphCurrent = name
-    local scaled = pcall(function() rig:ScaleTo(morphScale) end)
-    if not scaled then
-        warn("[Karpa's Curse] Entity model did not support ScaleTo")
-    end
+    pcall(function() rig:ScaleTo(morphScale) end)
     rig.Parent = Workspace
     refreshMorphGlow()
-    dashMorph.Text = "Morph: " .. name .. " (client only)"
-    morphSelectedLabel.Text = "ACTIVE: " .. string.upper(name) .. "  /  LOCAL"
-    notify("Original " .. name .. " model applied locally")
+    local mode = fallback and "THEMED LOCAL" or "ORIGINAL LOCAL"
+    dashMorph.Text = "Morph: " .. name .. " (" .. mode .. ")"
+    morphSelectedLabel.Text = "ACTIVE: " .. string.upper(name) .. " / " .. mode
+    notify(name .. " model applied: " .. mode .. ". Enable third person to view.")
 end
 
 section(morphPage, "Authentic entity morphs")
 label(morphPage, "Copies original DOORS model instances only when accessible in your current client. Your player is not changed on the server. Models without accessible geometry cannot be used.", 75)
 morphSelectedLabel = label(morphPage, "ACTIVE: HUMAN", 28, C.green, Enum.Font.GothamBold)
 morphScanLabel = label(morphPage, "Press Scan to find accessible original models", 42, C.muted)
+toggle(morphPage, "Use themed fallback if an original is unavailable", true, function(value)
+    allowThemedFallback = value
+end)
 button(morphPage, "SCAN ORIGINAL ENTITY ASSETS", function()
     if scanningAssets then notify("Scan already in progress") return end
     task.spawn(scanEntitySources)
@@ -1395,11 +1531,87 @@ end)
 -- No server-side currency mutation or external remote events.
 -- ═══════════════════════════════════════════════════════════════
 local givenTools = {}
+local hotbarEnabled = true
+local hotbarFrame = create("Frame", {
+    Name = "KarpaItemHotbar",
+    AnchorPoint = Vector2.new(0.5, 1),
+    Position = UDim2.new(0.5, 0, 1, -72),
+    Size = UDim2.fromOffset(536, 59),
+    BackgroundColor3 = C.panel,
+    BackgroundTransparency = 0.12,
+    BorderSizePixel = 0
+}, gui)
+rounded(hotbarFrame, 9)
+stroked(hotbarFrame, C.blue, 1, 0.46)
+create("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+    VerticalAlignment = Enum.VerticalAlignment.Center,
+    Padding = UDim.new(0, 5),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, hotbarFrame)
+local function equipLocalSlot(index)
+    local tool = givenTools[index]
+    if not tool or not tool.Parent then return end
+    local hum = humanoid()
+    if not hum then return end
+    if tool.Parent == player.Character then
+        hum:UnequipTools()
+    else
+        pcall(function() hum:EquipTool(tool) end)
+    end
+end
+local function refreshLocalHotbar()
+    if not hotbarFrame or not hotbarFrame.Parent then return end
+    for _, child in ipairs(hotbarFrame:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+    hotbarFrame.Visible = hotbarEnabled and #givenTools > 0
+    for i = 1, math.min(#givenTools, 8) do
+        local tool = givenTools[i]
+        if tool and tool.Parent then
+            local shortName = tool.Name:gsub("%s*%[LOCAL%]","")
+            if #shortName > 12 then shortName = shortName:sub(1, 11) .. "…" end
+            local slot = create("TextButton", {
+                Name = "Slot" .. i,
+                LayoutOrder = i,
+                Size = UDim2.fromOffset(60, 46),
+                Text = tostring(i) .. "\n" .. shortName,
+                TextWrapped = true,
+                Font = Enum.Font.GothamSemibold,
+                TextSize = 10,
+                TextColor3 = C.text,
+                AutoButtonColor = true,
+                BackgroundColor3 = tool.Parent == player.Character and C.blueDark or C.surface,
+                BorderSizePixel = 0
+            }, hotbarFrame)
+            rounded(slot, 6)
+            connect(slot.MouseButton1Click, function() equipLocalSlot(i) end)
+        end
+    end
+end
+connect(UserInputService.InputBegan, function(input, consumed)
+    if consumed or UserInputService:GetFocusedTextBox() then return end
+    local slotCodes = {
+        [Enum.KeyCode.One]=1, [Enum.KeyCode.Two]=2, [Enum.KeyCode.Three]=3,
+        [Enum.KeyCode.Four]=4, [Enum.KeyCode.Five]=5, [Enum.KeyCode.Six]=6,
+        [Enum.KeyCode.Seven]=7, [Enum.KeyCode.Eight]=8
+    }
+    local slot = slotCodes[input.KeyCode]
+    if slot and hotbarEnabled then equipLocalSlot(slot) end
+end)
+section(itemPage, "LOCAL inventory hotbar")
+label(itemPage, "Items created here appear in Karpa's own bottom-screen hotbar. Tap their slot or press 1-8 to equip. This does NOT inject server-issued DOORS inventory.", 94, C.muted)
+toggle(itemPage, "Show Karpa hotbar", true, function(v)
+    hotbarEnabled = v
+    refreshLocalHotbar()
+end)
 local function cleanTools()
     for _, tool in ipairs(givenTools) do
         if tool and tool.Parent then tool:Destroy() end
     end
     table.clear(givenTools)
+    refreshLocalHotbar()
 end
 local function createLocalToy(display, color, lightType)
     local backpack = player:FindFirstChildOfClass("Backpack")
@@ -1438,7 +1650,8 @@ local function createLocalToy(display, color, lightType)
     end)
     tool.Parent = backpack
     table.insert(givenTools, tool)
-    notify(display .. " toy added to local Backpack")
+    refreshLocalHotbar()
+    notify(display .. " added to Karpa hotbar (client-only)")
 end
 local function findOriginalTool(name)
     local wanted = normalizedName(name)
@@ -1462,7 +1675,9 @@ local function grantLocalItem(name)
         local source = findOriginalTool(name)
         if not alive then fetchingItem = false return end
         if not source then
-            notify("No accessible DOORS Tool template: " .. name, true)
+            notify("Original template unavailable; creating a local " .. name .. " prop")
+            local color = normalizedName(name) == "crucifix" and Color3.fromRGB(220, 180, 75) or C.blue
+            createLocalToy(name, color, "PointLight")
             fetchingItem = false
             return
         end
@@ -1479,7 +1694,8 @@ local function grantLocalItem(name)
             copy:SetAttribute("KarpaLocalCopy", true)
             copy.Parent = backpack
             table.insert(givenTools, copy)
-            notify("Client-only " .. name .. " template added; server may ignore it")
+            refreshLocalHotbar()
+            notify("Local " .. name .. " copied into Karpa hotbar; server might ignore it")
         end
         fetchingItem = false
     end)
@@ -1517,6 +1733,67 @@ end)
 button(itemPage, "Clear items made by Karpa's Curse", function()
     cleanTools()
     notify("Locally issued tools cleared")
+end)
+
+section(itemPage, "REAL run Gold helper")
+label(itemPage, "Attempts collection of existing nearby GoldPile loot prompts. It cannot create spendable Gold or Knobs; only the game server can credit real purchases at Jeff's Shop.", 96, C.muted)
+local goldAttempted = setmetatable({}, {__mode = "k"})
+local goldAttempts = 0
+local goldStatus = label(itemPage, "Nearby gold attempts: 0", 28, C.text)
+local function collectNearbyGold()
+    local root = rootPart()
+    local rooms = loadedRooms()
+    if not root or not rooms then return end
+    local now = os.clock()
+    local tried = 0
+    for _, room in ipairs(rooms:GetChildren()) do
+        if tonumber(room.Name) then
+            for _, obj in ipairs(room:GetDescendants()) do
+                if normalizedName(obj.Name) == "goldpile" and (obj:IsA("Model") or obj:IsA("BasePart")) then
+                    for _, prompt in ipairs(obj:GetDescendants()) do
+                        if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                            local parent = prompt.Parent
+                            local position = parent and (parent:IsA("Attachment") and parent.WorldPosition or
+                                parent:IsA("BasePart") and parent.Position or
+                                parent:IsA("Model") and parent:GetPivot().Position)
+                            if position and (root.Position-position).Magnitude < math.min(12, prompt.MaxActivationDistance)
+                                and now - (goldAttempted[prompt] or -100) >= 3.5 then
+                                goldAttempted[prompt] = now
+                                pcall(function()
+                                    prompt:InputHoldBegin()
+                                    task.delay(math.clamp(prompt.HoldDuration, 0, 8) + 0.15, function()
+                                        if prompt.Parent then pcall(function() prompt:InputHoldEnd() end) end
+                                    end)
+                                end)
+                                goldAttempts = goldAttempts + 1
+                                tried = tried + 1
+                                if tried >= 5 then return end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+local goldAutoToggle = toggle(itemPage, "Auto collect nearby GoldPiles", false, function(enabled)
+    state.autoGold = enabled
+    notify(enabled and "Nearby gold collection attempts enabled" or "Gold auto-collect disabled")
+end)
+button(itemPage, "Try collecting nearby Gold now", function()
+    collectNearbyGold()
+    goldStatus.Text = "Gold pickup attempts: " .. goldAttempts .. " (not verified purchases)"
+end)
+task.spawn(function()
+    while alive do
+        if state.autoGold then
+            pcall(collectNearbyGold)
+            if goldStatus and goldStatus.Parent then
+                goldStatus.Text = "Gold pickup attempts: " .. goldAttempts .. " (server verifies balance)"
+            end
+        end
+        task.wait(1.2)
+    end
 end)
 
 section(itemPage, "Knobs  /  sandbox only")
@@ -1584,7 +1861,7 @@ label(toolsPage, "This does not automatically grant achievements or bypass proxi
 section(toolsPage, "DOORS achievements")
 label(toolsPage, "Use the Achievements tab for goal guidance and in-range interaction automation. Only the DOORS server decides whether an achievement is unlocked.", 76)
 -- =========================================
--- DOORS ACHIEVEMENT ASSISTANT (V2.4)
+-- DOORS ACHIEVEMENT ASSISTANT (V2.5)
 -- No server remotes, BadgeService award calls, or fake completed badges.
 -- The auto actions can only attempt nearby, currently visible prompts.
 -- Actual achievements and progress are controlled by DOORS.
@@ -1621,6 +1898,74 @@ end)
 button(achievementPage, "<  Previous achievement goal", function()
     goalIndex = (goalIndex - 2) % #goals + 1
     showGoal()
+end)
+
+section(achievementPage, "Display achievement above head")
+label(achievementPage, "Enter a DOORS achievement's internal ID or name. First try the game's official selection remote (if available and allowed); the local title preview works for any text but does not unlock the achievement.", 115, C.muted)
+local selectedFlexTitle = ""
+local localFlexBillboard
+local flexEntry = create("TextBox", {
+    Text = "Hotel Hell", PlaceholderText = "Achievement name or internal ID",
+    TextColor3 = C.text, PlaceholderColor3 = C.muted,
+    Font = Enum.Font.Gotham, TextSize = 13,
+    BackgroundColor3 = C.surface, BorderSizePixel = 0,
+    ClearTextOnFocus = false, Size = UDim2.new(1, 0, 0, 39)
+}, achievementPage)
+rounded(flexEntry, 7)
+local function refreshFlexDisplay()
+    if localFlexBillboard then localFlexBillboard:Destroy(); localFlexBillboard = nil end
+    if selectedFlexTitle == "" then return end
+    local char = player.Character
+    local head = char and char:FindFirstChild("Head")
+    if not head then return end
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "KarpaLocalAchievementDisplay"
+    billboard.Size = UDim2.fromOffset(250, 50)
+    billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.7, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = 130
+    billboard.Adornee = head
+    billboard.Parent = gui
+    local textLabel = Instance.new("TextLabel")
+    textLabel.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
+    textLabel.BackgroundTransparency = 0.17
+    textLabel.Size = UDim2.fromScale(1, 1)
+    textLabel.Text = "✦ " .. selectedFlexTitle .. " ✦"
+    textLabel.TextWrapped = true
+    textLabel.Font = Enum.Font.GothamBold
+    textLabel.TextSize = 16
+    textLabel.TextColor3 = Color3.fromRGB(255, 210, 90)
+    textLabel.Parent = billboard
+    rounded(textLabel, 8)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = C.blue
+    stroke.Thickness = 1
+    stroke.Parent = textLabel
+    localFlexBillboard = billboard
+end
+local function chooseFlexDisplay()
+    selectedFlexTitle = flexEntry.Text:sub(1, 65)
+    if selectedFlexTitle == "" then notify("Enter an achievement name", true) return end
+    refreshFlexDisplay()
+    local info = ReplicatedStorage:FindFirstChild("EntityInfo")
+    local remote = info and info:FindFirstChild("FlexAchievement")
+    if remote and remote:IsA("RemoteEvent") then
+        local ok = pcall(function() remote:FireServer(selectedFlexTitle) end)
+        notify(ok and "Official achievement selection requested; local title shown" or "Only local title was applied")
+    else
+        notify("Local title applied; official selection remote unavailable")
+    end
+end
+button(achievementPage, "DISPLAY SELECTED ACHIEVEMENT", chooseFlexDisplay)
+button(achievementPage, "Remove custom title", function()
+    selectedFlexTitle = ""
+    refreshFlexDisplay()
+    notify("Local title removed")
+end)
+connect(player.CharacterAdded, function()
+    task.delay(1, function()
+        if alive then refreshFlexDisplay() end
+    end)
 end)
 
 section(achievementPage, "Auto interactions")
@@ -1789,7 +2134,7 @@ end)
 section(toolsPage, "Lifecycle")
 local resetButton = button(toolsPage, "Reset all toggles and movement")
 local unloadButton = button(toolsPage, "Unload Karpa's Curse")
-label(toolsPage, "No remote code, web requests, external assets, or credential access.  •  V2.4", 61)
+label(toolsPage, "No remote code, web requests, external assets, or credential access.  •  V2.5", 61)
 
 local function resetAll()
     queuedDoorNumber = nil
@@ -1809,9 +2154,13 @@ local function resetAll()
     fullbrightToggle.set(false)
     gravityToggle.set(false)
     godmodeToggle.set(false)
+    thirdPersonToggle.set(false)
+    selectedFlexTitle = ""
+    refreshFlexDisplay()
     speedSlider.set(16)
     speedLockToggle.set(false)
     autoLootToggle.set(false)
+    goldAutoToggle.set(false)
     autoDoorToggle.set(false)
     autoSwitchToggle.set(false)
     autoHideToggle.set(false)
@@ -1832,6 +2181,10 @@ local function cleanup()
     stopMorph(false)
     morphGlowToggle.set(false)
     cleanTools()
+    thirdPersonToggle.set(false)
+    restoreThirdPerson()
+    selectedFlexTitle = ""
+    refreshFlexDisplay()
     redVisionToggle.set(false)
     for _, saved in pairs(cachedSources) do if saved then saved:Destroy() end end
     table.clear(cachedSources)
@@ -1849,6 +2202,7 @@ local function cleanup()
     state.autoDoors = false
     state.autoSwitches = false
     state.autoHide = false
+    state.autoGold = false
     restoreCollisions()
     restoreEntities()
     clearHighlights(doorHighlights)
@@ -1858,6 +2212,7 @@ local function cleanup()
     if Workspace.CurrentCamera then Workspace.CurrentCamera.FieldOfView = originalFov end
     restoreSpeeds()
     restoreHealth()
+    restoreCollisionGuard()
     if cameraConnection then cameraConnection:Disconnect() end
     alive = false
     for _, connection in ipairs(connections) do connection:Disconnect() end
@@ -1945,7 +2300,7 @@ connect(player.CharacterAdded, function(character)
     local hum = character:WaitForChild("Humanoid", 6)
     if alive and hum then
         if state.speedLock then applySpeed(hum) end
-        if state.godmode then applySurvivalGuard(hum) end
+        if state.godmode then applySurvivalGuard(hum); applyCollisionGuard() end
     end
 end)
 
@@ -1955,7 +2310,7 @@ connect(RunService.RenderStepped, function()
     if not alive then return end
     local hum = humanoid()
     if state.speedLock then applySpeed(hum) end
-    if state.godmode then applySurvivalGuard(hum) end
+    if state.godmode then applySurvivalGuard(hum); applyCollisionGuard() end
 end)
 
 -- Detect sudden movement opposite to the held walking direction. This is
@@ -2108,4 +2463,4 @@ for id, page in pairs(pages) do
     tabButtons[id].BackgroundColor3 = active and C.blueDark or C.surface
     tabButtons[id].TextColor3 = active and C.text or C.muted
 end
-notify("V2.4 / Entity Lab ready  ·  scan models in MORPHS")
+notify("V2.5 / Entity Lab ready  ·  scan models in MORPHS")
