@@ -1776,7 +1776,7 @@ local function collectNearbyGold()
         end
     end
 end
-toggle(itemPage, "Auto collect nearby GoldPiles", false, function(enabled)
+local goldAutoToggle = toggle(itemPage, "Auto collect nearby GoldPiles", false, function(enabled)
     state.autoGold = enabled
     notify(enabled and "Nearby gold collection attempts enabled" or "Gold auto-collect disabled")
 end)
@@ -2160,6 +2160,7 @@ local function resetAll()
     speedSlider.set(16)
     speedLockToggle.set(false)
     autoLootToggle.set(false)
+    goldAutoToggle.set(false)
     autoDoorToggle.set(false)
     autoSwitchToggle.set(false)
     autoHideToggle.set(false)
