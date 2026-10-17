@@ -60,6 +60,8 @@ local state = {
     speedLock = false,
     godmode = false,
     noclip = false,
+    thirdPerson = false,
+    autoGold = false,
     doorESP = false,
     entityESP = false,
     hiddenEntities = false,
@@ -1016,6 +1018,67 @@ local godmodeToggle = toggle(playerPage, "Godmode (local attempt)", false, funct
 end)
 label(playerPage, "Continuously attempts to protect local Humanoid health and death state. DOORS' server can still damage, kill or respawn you.", 82)
 
+
+-- Third-person view uses a local scriptable follow-camera, because DOORS
+-- can re-enable LockFirstPerson during gameplay.
+local cameraBackup = {
+    mode = player.CameraMode,
+    minZoom = player.CameraMinZoomDistance,
+    maxZoom = player.CameraMaxZoomDistance,
+    cameraType = Workspace.CurrentCamera and Workspace.CurrentCamera.CameraType or Enum.CameraType.Custom
+}
+local thirdPersonDistance = 9
+local function restoreThirdPerson()
+    state.thirdPerson = false
+    pcall(function()
+        player.CameraMode = cameraBackup.mode
+        player.CameraMinZoomDistance = cameraBackup.minZoom
+        player.CameraMaxZoomDistance = cameraBackup.maxZoom
+        local camera = Workspace.CurrentCamera
+        if camera then
+            camera.CameraType = cameraBackup.cameraType
+            if humanoid() then camera.CameraSubject = humanoid() end
+        end
+    end)
+end
+local function thirdPersonFrame()
+    if not alive or not state.thirdPerson then return end
+    local camera = Workspace.CurrentCamera
+    local root = rootPart()
+    if not camera or not root then return end
+    local center = root.Position + Vector3.new(0, 2, 0)
+    local requested = center - root.CFrame.LookVector * thirdPersonDistance + Vector3.new(0, 2, 0)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = player.Character and {player.Character} or {}
+    params.IgnoreWater = true
+    local hit = Workspace:Raycast(center, requested - center, params)
+    local cameraPosition = hit and (hit.Position + hit.Normal * 0.65) or requested
+    camera.CameraType = Enum.CameraType.Scriptable
+    camera.CFrame = CFrame.lookAt(cameraPosition, center)
+    camera.Focus = CFrame.new(center)
+end
+section(visualPage, "Camera controls")
+local thirdPersonToggle = toggle(visualPage, "Third-person view", false, function(enabled)
+    state.thirdPerson = enabled
+    if enabled then
+        pcall(function()
+            player.CameraMode = Enum.CameraMode.Classic
+            player.CameraMinZoomDistance = 0.5
+            player.CameraMaxZoomDistance = 20
+        end)
+        notify("Third person enabled - follows avatar")
+    else
+        restoreThirdPerson()
+        notify("Default camera restored")
+    end
+end)
+slider(visualPage, "Camera distance", 4, 16, 9, function(value)
+    thirdPersonDistance = value
+end)
+label(visualPage, "Local follow camera, controlled by character direction. Disable to return to the normal DOORS camera.", 80, C.muted)
+connect(RunService.RenderStepped, thirdPersonFrame)
+
 -- ═══════════════════════════════════════════════════════════════
 -- TRUE-ASSET VISUAL MORPH LAB
 -- Catalog names reflect DOORS entities. Only actual *accessible game
@@ -1809,6 +1872,7 @@ local function resetAll()
     fullbrightToggle.set(false)
     gravityToggle.set(false)
     godmodeToggle.set(false)
+    thirdPersonToggle.set(false)
     speedSlider.set(16)
     speedLockToggle.set(false)
     autoLootToggle.set(false)
@@ -1832,6 +1896,8 @@ local function cleanup()
     stopMorph(false)
     morphGlowToggle.set(false)
     cleanTools()
+    thirdPersonToggle.set(false)
+    restoreThirdPerson()
     redVisionToggle.set(false)
     for _, saved in pairs(cachedSources) do if saved then saved:Destroy() end end
     table.clear(cachedSources)
