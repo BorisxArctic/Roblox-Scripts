@@ -1088,8 +1088,8 @@ connect(RunService.RenderStepped, thirdPersonFrame)
 local morphCatalog = {
     {"Rush", "Hotel", {"Rush", "RushMoving", "RushNew", "RushEntity"}},
     {"Ambush", "Hotel", {"Ambush", "AmbushMoving", "AmbushEntity"}},
-    {"Figure", "Hotel", {"Figure", "FigureRig", "FigureModel"}},
-    {"Seek", "Hotel", {"Seek", "SeekMoving", "SeekRig", "SeekMonster"}},
+    {"Figure", "Hotel", {"Figure", "FigureRig", "FigureModel", "FigureRagdoll"}},
+    {"Seek", "Hotel", {"Seek", "SeekMoving", "SeekRig", "SeekMonster", "SeekRagdoll"}},
     {"Eyes", "Hotel", {"Eyes", "EyesEntity"}},
     {"Screech", "Hotel", {"Screech", "ScreechRig"}},
     {"Halt", "Hotel", {"Halt", "HaltEntity"}},
@@ -1316,37 +1316,75 @@ local function refreshMorphGlow()
     morphGlow = glow
 end
 
+
+-- Rendered fallback for entities whose original model is not replicated.
+-- Clearly labelled as an interpretation, never as an original DOORS mesh.
+local allowThemedFallback = true
+local function buildThemedMorph(name)
+    local rig = Instance.new("Model")
+    rig.Name = "KarpaThemed_" .. normalizedName(name)
+    local humanoidShape = name == "Figure" or name == "Seek"
+        or name == "Grumble" or name == "Queen Grumble"
+    local color = name == "Seek" and Color3.fromRGB(10, 10, 14)
+        or name == "Ambush" and Color3.fromRGB(40, 140, 95)
+        or humanoidShape and Color3.fromRGB(121, 52, 50)
+        or Color3.fromRGB(132, 18, 36)
+    local function block(label, shape, size, position, color3)
+        local p = Instance.new("Part")
+        p.Name = label
+        p.Shape = shape
+        p.Size = size
+        p.CFrame = CFrame.new(position)
+        p.Anchored = true
+        p.CanCollide = false
+        p.CanTouch = false
+        p.CanQuery = false
+        p.Color = color3
+        p.Material = Enum.Material.Neon
+        p.Parent = rig
+        return p
+    end
+    if humanoidShape then
+        block("Body", Enum.PartType.Block, Vector3.new(2, 3, 1.2), Vector3.new(0, 1, 0), color)
+        block("Head", Enum.PartType.Ball, Vector3.new(1.55, 1.55, 1.55), Vector3.new(0, 3.1, 0), color)
+        for _, side in ipairs({-1, 1}) do
+            block("Arm", Enum.PartType.Block, Vector3.new(0.65, 3.5, 0.6), Vector3.new(side*1.55, 0.5, 0), color)
+            block("Leg", Enum.PartType.Block, Vector3.new(0.75, 3, 0.75), Vector3.new(side*0.6, -2.1, 0), color)
+        end
+        block("Eye", Enum.PartType.Ball, Vector3.new(0.8, 0.8, 0.3),
+            Vector3.new(0, 3.3, -0.7), Color3.fromRGB(255, 255, 245))
+    else
+        block("Main", Enum.PartType.Ball, Vector3.new(4, 4, 3.6), Vector3.new(0, 1.5, 0), color)
+        for _, side in ipairs({-1, 1}) do
+            block("Eye", Enum.PartType.Ball, Vector3.new(0.85, 0.85, 0.35),
+                Vector3.new(side*0.9, 2.1, -1.5), Color3.fromRGB(255, 255, 245))
+        end
+        block("Mouth", Enum.PartType.Block, Vector3.new(1.65, 0.4, 0.3),
+            Vector3.new(0, 0.8, -1.7), Color3.fromRGB(0, 0, 0))
+    end
+    return rig
+end
 local function morphInto(name)
     local entry = sourceMap[name]
     local source = entry and entry.source
-    if not source or (not source.Parent and not (entry and entry.cached)) then
-        if scanningAssets then
-            notify("Asset scan in progress; try again shortly", true)
+    local available = source and (source.Parent or entry.cached)
+    local cloned
+    if available then
+        local originalArchivable = source.Archivable
+        pcall(function() source.Archivable = true end)
+        local ok, result = pcall(function() return source:Clone() end)
+        pcall(function() source.Archivable = originalArchivable end)
+        if ok then cloned = result end
+    end
+    local fallback = not cloned
+    if fallback then
+        if not allowThemedFallback then
+            notify("No accessible original model for " .. name .. "; enable themed fallback", true)
             return
         end
-        notify("Checking loaded DOORS models for " .. name)
-        task.spawn(function()
-            scanEntitySources()
-            if alive and sourceMap[name] and (sourceMap[name].cached or sourceMap[name].source.Parent) then
-                morphInto(name)
-            elseif alive then
-                notify("No accessible original model: " .. name, true)
-            end
-        end)
-        return
-    end
-    local cloned
-    local ok, reason = pcall(function() cloned = source:Clone() end)
-    if not ok or not cloned then
-        notify("Original " .. name .. " model cannot be cloned", true)
-        return
-    end
-    -- Validate before removing a currently active morph.
-    if not cachedSources[name] then cacheObservedEntity(source) end
-    if not (cloned:IsA("Model") or cloned:IsA("BasePart")) then
-        cloned:Destroy()
-        notify("This entity has no morphable geometry", true)
-        return
+        cloned = buildThemedMorph(name)
+    elseif not cachedSources[name] then
+        cacheObservedEntity(source)
     end
     stopMorph(false)
     local rig = Instance.new("Model")
@@ -1368,21 +1406,22 @@ local function morphInto(name)
     end
     morphVisual = rig
     morphCurrent = name
-    local scaled = pcall(function() rig:ScaleTo(morphScale) end)
-    if not scaled then
-        warn("[Karpa's Curse] Entity model did not support ScaleTo")
-    end
+    pcall(function() rig:ScaleTo(morphScale) end)
     rig.Parent = Workspace
     refreshMorphGlow()
-    dashMorph.Text = "Morph: " .. name .. " (client only)"
-    morphSelectedLabel.Text = "ACTIVE: " .. string.upper(name) .. "  /  LOCAL"
-    notify("Original " .. name .. " model applied locally")
+    local mode = fallback and "THEMED LOCAL" or "ORIGINAL LOCAL"
+    dashMorph.Text = "Morph: " .. name .. " (" .. mode .. ")"
+    morphSelectedLabel.Text = "ACTIVE: " .. string.upper(name) .. " / " .. mode
+    notify(name .. " model applied: " .. mode .. ". Enable third person to view.")
 end
 
 section(morphPage, "Authentic entity morphs")
 label(morphPage, "Copies original DOORS model instances only when accessible in your current client. Your player is not changed on the server. Models without accessible geometry cannot be used.", 75)
 morphSelectedLabel = label(morphPage, "ACTIVE: HUMAN", 28, C.green, Enum.Font.GothamBold)
 morphScanLabel = label(morphPage, "Press Scan to find accessible original models", 42, C.muted)
+toggle(morphPage, "Use themed fallback if an original is unavailable", true, function(value)
+    allowThemedFallback = value
+end)
 button(morphPage, "SCAN ORIGINAL ENTITY ASSETS", function()
     if scanningAssets then notify("Scan already in progress") return end
     task.spawn(scanEntitySources)
