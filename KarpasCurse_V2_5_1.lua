@@ -1,4 +1,6 @@
 -- KARPA'S CURSE | V2.5.1
+-- Karpa's Curse startup guard: shows a diagnostic on-screen if UI initialization errors.
+local bootOK, bootError = xpcall(function()
 -- Roblox DOORS | Client-side utility UI (speed persistence + survival tools)
 -- No HTTP requests, remote code, or hidden downloads.
 -- NOTE: Server-authoritative mechanics (health, badges, entity damage, room
@@ -2466,3 +2468,39 @@ for id, page in pairs(pages) do
     tabButtons[id].TextColor3 = active and C.text or C.muted
 end
 notify("V2.5.1 / Entity Lab ready  ·  scan models in MORPHS")
+
+end, function(message)
+    return tostring(message)
+end)
+if not bootOK then
+    warn("[Karpa's Curse / startup] " .. tostring(bootError))
+    pcall(function()
+        local me = game:GetService("Players").LocalPlayer
+        local parent = me and me:FindFirstChildOfClass("PlayerGui")
+        if not parent then return end
+        local previous = parent:FindFirstChild("KarpaStartupError")
+        if previous then previous:Destroy() end
+        local screen = Instance.new("ScreenGui")
+        screen.Name = "KarpaStartupError"
+        screen.ResetOnSpawn = false
+        screen.DisplayOrder = 9999
+        screen.Parent = parent
+        local panel = Instance.new("TextLabel")
+        panel.AnchorPoint = Vector2.new(0.5, 0)
+        panel.Position = UDim2.fromScale(0.5, 0.07)
+        panel.Size = UDim2.new(0.84, 0, 0, 116)
+        panel.BackgroundColor3 = Color3.fromRGB(30, 6, 12)
+        panel.TextColor3 = Color3.fromRGB(255, 235, 235)
+        panel.Font = Enum.Font.GothamSemibold
+        panel.TextSize = 14
+        panel.TextWrapped = true
+        panel.Text = "KARPA'S CURSE / STARTUP ERROR\n" .. tostring(bootError):sub(1, 350)
+        panel.Parent = screen
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 10)
+        corner.Parent = panel
+        task.delay(30, function()
+            if screen.Parent then screen:Destroy() end
+        end)
+    end)
+end
